@@ -102,6 +102,7 @@ stop-token = "0.7.0"
 uhlc = "0.4.0"
 uuid = { version = "0.8.2", features = ["v4"] }
 vec_map = "0.8.2"
+vector-map = "1.0.1"
 
 [dev-dependencies]
 criterion = "0.3.4"
