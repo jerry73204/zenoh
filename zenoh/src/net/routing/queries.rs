@@ -1067,45 +1067,40 @@ fn insert_target_for_qabls(
     qabls: &VecMap<(PeerId, ZInt), QueryableInfo>,
     complete: bool,
 ) {
-    if net.trees.len() > source.index() {
-        for ((qabl, qabl_kind), qabl_info) in qabls {
-            if let Some(qabl_idx) = net.get_idx(qabl) {
-                if net.trees[source.index()].directions.len() > qabl_idx.index() {
-                    if let Some(direction) = net.trees[source.index()].directions[qabl_idx.index()]
-                    {
-                        if net.graph.contains_node(direction) {
-                            if let Some(face) = tables.get_face(&net.graph[direction].pid) {
-                                if net.distances.len() > qabl_idx.index() {
-                                    let key_expr = Tables::get_best_key(
-                                        &tables.restree,
-                                        prefix,
-                                        suffix,
-                                        face.id,
-                                    );
-                                    route.push(TargetQabl {
-                                        direction: (
-                                            face.clone(),
-                                            key_expr.to_owned(),
-                                            if source.index() != 0 {
-                                                Some(RoutingContext::new(source.index() as ZInt))
-                                            } else {
-                                                None
-                                            },
-                                        ),
-                                        complete: if complete { qabl_info.complete } else { 0 },
-                                        kind: *qabl_kind,
-                                        distance: net.distances[qabl_idx.index()],
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let tree = match net.trees.get(source.index()) {
+        Some(tree) => tree,
+        None => {
+            log::trace!("Tree for node sid:{} not yet ready", source.index());
+            return;
         }
-    } else {
-        log::trace!("Tree for node sid:{} not yet ready", source.index());
-    }
+    };
+
+    (|| {
+        for ((qabl, qabl_kind), qabl_info) in qabls {
+            let qabl_idx = net.get_idx(qabl)?;
+            let direction = (*(tree.directions.get(qabl_idx.index())?))?;
+            let node = net.graph.node_weight(direction)?;
+            let face = tables.get_face(&node.pid)?;
+            let distance = *net.distances.get(qabl_idx.index())?;
+            let key_expr = Tables::get_best_key(&tables.restree, prefix, suffix, face.id);
+            route.push(TargetQabl {
+                direction: (
+                    face.clone(),
+                    key_expr.to_owned(),
+                    if source.index() != 0 {
+                        Some(RoutingContext::new(source.index() as ZInt))
+                    } else {
+                        None
+                    },
+                ),
+                complete: if complete { qabl_info.complete } else { 0 },
+                kind: *qabl_kind,
+                distance,
+            });
+        }
+
+        Some(())
+    })();
 }
 
 fn compute_query_route(
