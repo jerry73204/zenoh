@@ -656,27 +656,28 @@ pub(crate) fn pubsub_new_face(tables: &mut Tables, face: &Arc<FaceState>) {
 pub(crate) fn pubsub_remove_node(tables: &mut Tables, node: &PeerId, net_type: WhatAmI) {
     match net_type {
         WhatAmI::Router => {
-            for res in tables
+            let resources: Vec<ResourceTreeIndex> = tables
                 .router_subs
                 .iter()
                 .filter(|res| tables.restree.weight(res).router_subs.contains(node))
                 .cloned()
-                .collect::<Vec<ResourceTreeIndex>>()
-            {
-                unregister_router_subscription(tables, &res, node);
+                .collect();
 
+            for res in resources {
+                unregister_router_subscription(tables, &res, node);
                 compute_matches_data_routes(tables, &res);
                 tables.clean_resource(res);
             }
         }
         WhatAmI::Peer => {
-            for res in tables
+            let resources: Vec<ResourceTreeIndex> = tables
                 .peer_subs
                 .iter()
                 .filter(|res| tables.restree.weight(res).peer_subs.contains(node))
                 .cloned()
-                .collect::<Vec<ResourceTreeIndex>>()
-            {
+                .collect();
+
+            for res in resources {
                 unregister_peer_subscription(tables, &res, node);
 
                 if tables.whatami == WhatAmI::Router {
