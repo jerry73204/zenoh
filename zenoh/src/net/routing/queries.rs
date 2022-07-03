@@ -582,33 +582,33 @@ fn send_forget_sourced_queryable_to_net_childs(
     src_face: Option<&Arc<FaceState>>,
     routing_context: Option<RoutingContext>,
 ) {
-    for child in childs {
-        if net.graph.contains_node(*child) {
-            match faces
-                .values()
-                .find(|face| face.pid == net.graph[*child].pid)
-                .cloned()
-            {
-                Some(someface) => {
-                    if src_face.is_none() || someface.id != src_face.unwrap().id {
-                        let key_expr = Tables::decl_key(restree, res, &someface);
+    childs
+        .iter()
+        .filter_map(|&child| net.graph.node_weight(child))
+        .filter_map(|child_node| {
+            let someface = faces.values().find(|face| face.pid == child_node.pid);
 
-                        log::debug!(
-                            "Send forget queryable {} (kind: {}) on {}",
-                            restree.expr(res),
-                            kind,
-                            someface
-                        );
-
-                        someface
-                            .primitives
-                            .forget_queryable(&key_expr, kind, routing_context);
-                    }
-                }
-                None => log::trace!("Unable to find face for pid {}", net.graph[*child].pid),
+            if someface.is_none() {
+                log::trace!("Unable to find face for pid {}", child_node.pid)
             }
-        }
-    }
+
+            someface
+        })
+        .filter(|someface| !matches!(src_face, Some(face) if someface.id == face.id))
+        .for_each(|someface| {
+            let key_expr = Tables::decl_key(restree, res, someface);
+
+            log::debug!(
+                "Send forget queryable {} (kind: {}) on {}",
+                restree.expr(res),
+                kind,
+                someface
+            );
+
+            someface
+                .primitives
+                .forget_queryable(&key_expr, kind, routing_context);
+        });
 }
 
 fn propagate_forget_simple_queryable(tables: &mut Tables, res: &ResourceTreeIndex, kind: ZInt) {
