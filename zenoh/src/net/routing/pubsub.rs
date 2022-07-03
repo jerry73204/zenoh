@@ -47,28 +47,26 @@ fn send_sourced_subscription_to_net_childs(
     sub_info: &SubInfo,
     routing_context: Option<RoutingContext>,
 ) {
-    for child in childs {
-        if net.graph.contains_node(*child) {
-            match faces
-                .values()
-                .find(|face| face.pid == net.graph[*child].pid)
-                .cloned()
-            {
-                Some(someface) => {
-                    if src_face.is_none() || someface.id != src_face.unwrap().id {
-                        let key_expr = Tables::decl_key(restree, res, &someface);
+    childs
+        .iter()
+        .filter_map(|&child| net.graph.node_weight(child))
+        .filter_map(|child_node| {
+            let someface = faces.values().find(|face| face.pid == child_node.pid);
 
-                        log::debug!("Send subscription {} on {}", restree.expr(res), someface);
-
-                        someface
-                            .primitives
-                            .decl_subscriber(&key_expr, sub_info, routing_context);
-                    }
-                }
-                None => log::trace!("Unable to find face for pid {}", net.graph[*child].pid),
+            if someface.is_none() {
+                log::trace!("Unable to find face for pid {}", child_node.pid)
             }
-        }
-    }
+
+            someface
+        })
+        .filter(|someface| !matches!(src_face, Some(face) if face.id == someface.id))
+        .for_each(|someface| {
+            let key_expr = Tables::decl_key(restree, res, someface);
+            log::debug!("Send subscription {} on {}", restree.expr(res), someface);
+            someface
+                .primitives
+                .decl_subscriber(&key_expr, sub_info, routing_context);
+        });
 }
 
 fn propagate_simple_subscription(
