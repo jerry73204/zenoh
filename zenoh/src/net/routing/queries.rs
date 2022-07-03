@@ -65,21 +65,22 @@ fn merge_qabl_infos(mut this: QueryableInfo, info: &QueryableInfo) -> QueryableI
 }
 
 fn local_router_qabl_info(tables: &Tables, res: &ResourceTreeIndex, kind: ZInt) -> QueryableInfo {
-    let info = tables
-        .restree
-        .weight(res)
-        .peer_qabls
-        .iter()
-        .fold(None, |accu, ((pid, k), info)| {
-            if *pid != tables.pid && *k == kind {
-                Some(match accu {
-                    Some(accu) => merge_qabl_infos(accu, info),
-                    None => info.clone(),
-                })
-            } else {
-                accu
-            }
-        });
+    let info =
+        tables
+            .restree
+            .weight(res)
+            .peer_qabls
+            .iter()
+            .fold(None, |accu, (&(pid, k), info)| {
+                if pid != tables.pid && k == kind {
+                    Some(match accu {
+                        Some(accu) => merge_qabl_infos(accu, info),
+                        None => info.clone(),
+                    })
+                } else {
+                    accu
+                }
+            });
     tables
         .restree
         .weight(res)
@@ -108,8 +109,8 @@ fn local_peer_qabl_info(tables: &Tables, res: &ResourceTreeIndex, kind: ZInt) ->
             .weight(res)
             .router_qabls
             .iter()
-            .fold(None, |accu, ((pid, k), info)| {
-                if *pid != tables.pid && *k == kind {
+            .fold(None, |accu, (&(pid, k), info)| {
+                if pid != tables.pid && k == kind {
                     Some(match accu {
                         Some(accu) => merge_qabl_infos(accu, info),
                         None => info.clone(),
@@ -145,7 +146,7 @@ fn local_peer_qabl_info(tables: &Tables, res: &ResourceTreeIndex, kind: ZInt) ->
 fn local_qabl_info(
     restree: &ResourceTree,
     whatami: WhatAmI,
-    local_pid: &PeerId,
+    local_pid: PeerId,
     res: &ResourceTreeIndex,
     kind: ZInt,
     face: &Arc<FaceState>,
@@ -155,8 +156,8 @@ fn local_qabl_info(
             .weight(res)
             .router_qabls
             .iter()
-            .fold(None, |accu, ((pid, k), info)| {
-                if *pid != *local_pid && *k == kind {
+            .fold(None, |accu, (&(pid, k), info)| {
+                if pid != local_pid && k == kind {
                     Some(match accu {
                         Some(accu) => merge_qabl_infos(accu, info),
                         None => info.clone(),
@@ -173,7 +174,7 @@ fn local_qabl_info(
         .peer_qabls
         .iter()
         .fold(info, |accu, ((pid, k), info)| {
-            if *pid != *local_pid && *k == kind {
+            if *pid != local_pid && *k == kind {
                 Some(match accu {
                     Some(accu) => merge_qabl_infos(accu, info),
                     None => info.clone(),
@@ -259,7 +260,7 @@ fn propagate_simple_queryable(
     let faces = &mut tables.faces;
     let restree = &mut tables.restree;
     for dst_face in &mut faces.values_mut() {
-        let info = local_qabl_info(restree, whatami, &pid, res, kind, dst_face);
+        let info = local_qabl_info(restree, whatami, pid, res, kind, dst_face);
         let current_info = dst_face.local_qabls.get(&(res.clone(), kind));
         if (src_face.is_none() || src_face.as_ref().unwrap().id != dst_face.id)
             && (current_info.is_none() || *current_info.unwrap() != info)
@@ -912,7 +913,7 @@ pub(crate) fn queries_new_face(tables: &mut Tables, face: &Arc<FaceState>) {
                 .walk_next(&restree.weight(qabl).router_qabls)
                 .map(|((_, kind), _)| *kind)
             {
-                let info = local_qabl_info(restree, tables.whatami, &tables.pid, qabl, kind, face);
+                let info = local_qabl_info(restree, tables.whatami, tables.pid, qabl, kind, face);
                 get_mut_unchecked(face)
                     .local_qabls
                     .insert((qabl.clone(), kind), info.clone());

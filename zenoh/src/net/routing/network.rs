@@ -15,7 +15,6 @@ use super::runtime::Runtime;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{VisitMap, Visitable};
 use std::collections::HashSet;
-use std::convert::TryInto;
 use std::fmt;
 use vec_map::VecMap;
 use zenoh_link::Locator;
@@ -73,23 +72,22 @@ impl Link {
 
     #[inline]
     pub(crate) fn set_pid_mapping(&mut self, psid: ZInt, pid: PeerId) {
-        self.mappings.insert(psid.try_into().unwrap(), pid);
+        self.mappings.insert(psid as usize, pid);
     }
 
     #[inline]
     pub(crate) fn get_pid(&self, psid: &ZInt) -> Option<&PeerId> {
-        self.mappings.get((*psid).try_into().unwrap())
+        self.mappings.get((*psid) as usize)
     }
 
     #[inline]
     pub(crate) fn set_local_psid_mapping(&mut self, psid: ZInt, local_psid: ZInt) {
-        self.local_mappings
-            .insert(psid.try_into().unwrap(), local_psid);
+        self.local_mappings.insert(psid as usize, local_psid);
     }
 
     #[inline]
     pub(crate) fn get_local_psid(&self, psid: &ZInt) -> Option<&ZInt> {
-        self.local_mappings.get((*psid).try_into().unwrap())
+        self.local_mappings.get((*psid) as usize)
     }
 }
 
@@ -199,11 +197,15 @@ impl Network {
     fn add_node(&mut self, node: Node) -> NodeIndex {
         let pid = node.pid;
         let idx = self.graph.add_node(node);
-        for link in self.links.values_mut() {
-            if let Some((psid, _)) = link.mappings.iter().find(|(_, p)| **p == pid) {
+        self.links
+            .values_mut()
+            .filter_map(|link| {
+                let (psid, _) = link.mappings.iter().find(|&(_, &p)| p == pid)?;
+                Some((link, psid))
+            })
+            .for_each(|(link, psid)| {
                 link.local_mappings.insert(psid, idx.index() as ZInt);
-            }
-        }
+            });
         idx
     }
 
@@ -213,7 +215,7 @@ impl Network {
             .iter()
             .filter_map(|pid| {
                 if let Some(idx2) = self.get_idx(pid) {
-                    Some(idx2.index().try_into().unwrap())
+                    Some(idx2.index() as ZInt)
                 } else {
                     log::error!(
                         "{} Internal error building link state: cannot get index of {}",
@@ -225,7 +227,7 @@ impl Network {
             })
             .collect();
         LinkState {
-            psid: idx.index().try_into().unwrap(),
+            psid: idx.index() as ZInt,
             sn: self.graph[idx].sn,
             pid: if details {
                 Some(self.graph[idx].pid)
@@ -311,7 +313,7 @@ impl Network {
 
         // register psid<->pid mappings & apply mapping to nodes
         #[allow(clippy::needless_collect)] // need to release borrow on self
-        let link_states = link_states
+        let link_states: Vec<_> = link_states
             .into_iter()
             .filter_map(|link_state| {
                 if let Some(pid) = link_state.pid {
@@ -346,11 +348,11 @@ impl Network {
                     }
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         // apply psid<->pid mapping to links
         let src_link = self.get_link_from_pid(&src).unwrap();
-        let link_states = link_states
+        let link_states: Vec<_> = link_states
             .into_iter()
             .map(|(pid, wai, locs, sn, links)| {
                 let links: Vec<PeerId> = links
@@ -371,7 +373,7 @@ impl Network {
                     .collect();
                 (pid, wai, locs, sn, links)
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         // log::trace!(
         //     "{} Received from {} mapped: {:?}",
@@ -389,7 +391,7 @@ impl Network {
         }
 
         // Add nodes to graph & filter out up to date states
-        let mut link_states = link_states
+        let mut link_states: Vec<(Vec<PeerId>, NodeIndex, bool)> = link_states
             .into_iter()
             .filter_map(
                 |(pid, whatami, locators, sn, links)| match self.get_idx(&pid) {
@@ -425,7 +427,7 @@ impl Network {
                     }
                 },
             )
-            .collect::<Vec<(Vec<PeerId>, NodeIndex, bool)>>();
+            .collect();
 
         // Add/remove edges from graph
         let mut reintroduced_nodes = vec![];
@@ -474,10 +476,10 @@ impl Network {
         link_states.extend(reintroduced_nodes);
 
         let removed = self.remove_detached_nodes();
-        let link_states = link_states
+        let link_states: Vec<(Vec<PeerId>, NodeIndex, bool)> = link_states
             .into_iter()
             .filter(|ls| !removed.iter().any(|(idx, _)| idx == &ls.1))
-            .collect::<Vec<(Vec<PeerId>, NodeIndex, bool)>>();
+            .collect();
 
         if (self.peers_autoconnect && self.runtime.whatami == WhatAmI::Peer)
             || (self.routers_autoconnect_gossip && self.runtime.whatami == WhatAmI::Router)
@@ -517,10 +519,10 @@ impl Network {
                 Vec<(Vec<PeerId>, NodeIndex, bool)>,
                 Vec<(Vec<PeerId>, NodeIndex, bool)>,
             ) = link_states.into_iter().partition(|(_, _, new)| *new);
-            let new_idxs = new_idxs
+            let new_idxs: Vec<(NodeIndex, bool)> = new_idxs
                 .into_iter()
                 .map(|(_, idx1, _new_node)| (idx1, true))
-                .collect::<Vec<(NodeIndex, bool)>>();
+                .collect();
             for link in self.links.values() {
                 if link.pid != src {
                     let updated_idxs: Vec<(NodeIndex, bool)> = updated_idxs
@@ -607,15 +609,15 @@ impl Network {
 
         self.graph[self.idx].sn += 1;
 
-        let links = self
+        let links: Vec<ZInt> = self
             .links
             .values()
-            .map(|link| self.get_idx(&link.pid).unwrap().index().try_into().unwrap())
-            .collect::<Vec<ZInt>>();
+            .map(|link| self.get_idx(&link.pid).unwrap().index() as ZInt)
+            .collect();
 
         let msg = ZenohMessage::make_link_state_list(
             vec![LinkState {
-                psid: self.idx.index().try_into().unwrap(),
+                psid: self.idx.index() as ZInt,
                 sn: self.graph[self.idx].sn,
                 pid: None,
                 whatami: self.graph[self.idx].whatami,
@@ -650,7 +652,9 @@ impl Network {
         }
 
         let mut removed = vec![];
-        for idx in self.graph.node_indices().collect::<Vec<NodeIndex>>() {
+        let indices: Vec<NodeIndex> = self.graph.node_indices().collect();
+
+        for idx in indices {
             if !visit_map.is_visited(&idx) {
                 log::debug!("Remove node {}", &self.graph[idx].pid);
                 removed.push((idx, self.graph.remove_node(idx).unwrap()));
