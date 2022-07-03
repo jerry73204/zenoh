@@ -355,7 +355,8 @@ fn register_router_queryable(
         propagate_sourced_queryable(tables, res, kind, qabl_info, face, &router, WhatAmI::Router);
 
         // Propagate queryable to peers
-        if face.is_none() || face.as_ref().unwrap().whatami != WhatAmI::Peer {
+        let is_peer = matches!(face, Some(face) if face.whatami == WhatAmI::Peer);
+        if !is_peer {
             let local_info = local_peer_qabl_info(tables, res, kind);
             register_peer_queryable(tables, face, res, kind, &local_info, tables.pid)
         }
