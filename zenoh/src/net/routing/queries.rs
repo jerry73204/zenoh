@@ -219,36 +219,33 @@ fn send_sourced_queryable_to_net_childs(
     src_face: Option<&Arc<FaceState>>,
     routing_context: Option<RoutingContext>,
 ) {
-    for &child in childs {
-        if let Some(child_node) = net.graph.node_weight(child) {
-            match faces
-                .values()
-                .find(|face| face.pid == child_node.pid)
-                .cloned()
-            {
-                Some(someface) => {
-                    if src_face.is_none() || someface.id != src_face.as_ref().unwrap().id {
-                        let key_expr = Tables::decl_key(restree, res, &someface);
+    childs
+        .iter()
+        .filter_map(|&child| net.graph.node_weight(child))
+        .filter_map(|child_node| {
+            let someface = faces.values().find(|face| face.pid == child_node.pid);
 
-                        log::debug!(
-                            "Send queryable {} (kind: {}) on {}",
-                            restree.expr(res),
-                            kind,
-                            someface
-                        );
-
-                        someface.primitives.decl_queryable(
-                            &key_expr,
-                            kind,
-                            qabl_info,
-                            routing_context,
-                        );
-                    }
-                }
-                None => log::trace!("Unable to find face for pid {}", child_node.pid),
+            if someface.is_none() {
+                log::trace!("Unable to find face for pid {}", child_node.pid)
             }
-        }
-    }
+
+            someface
+        })
+        .filter(|someface| !matches!(src_face, Some(src_face) if someface.id == src_face.id))
+        .for_each(|someface| {
+            let key_expr = Tables::decl_key(restree, res, someface);
+
+            log::debug!(
+                "Send queryable {} (kind: {}) on {}",
+                restree.expr(res),
+                kind,
+                someface
+            );
+
+            someface
+                .primitives
+                .decl_queryable(&key_expr, kind, qabl_info, routing_context);
+        });
 }
 
 fn propagate_simple_queryable(
