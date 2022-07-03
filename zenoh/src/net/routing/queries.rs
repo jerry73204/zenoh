@@ -395,7 +395,10 @@ fn register_peer_queryable(
     peer: PeerId,
 ) {
     let current_info = tables.restree.weight(res).peer_qabls.get(&(peer, kind));
-    if current_info.is_none() || current_info.unwrap() != qabl_info {
+
+    let is_registered = matches!(current_info, Some(info) if info == qabl_info);
+
+    if !is_registered {
         // Register peer queryable
         {
             log::debug!(
