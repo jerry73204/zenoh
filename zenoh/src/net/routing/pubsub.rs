@@ -768,39 +768,37 @@ fn insert_faces_for_subs(
     source: NodeIndex,
     subs: &VecSet<PeerId>,
 ) {
-    if net.trees.len() > source.index() {
-        for sub in subs {
-            if let Some(sub_idx) = net.get_idx(sub) {
-                if net.trees[source.index()].directions.len() > sub_idx.index() {
-                    if let Some(direction) = net.trees[source.index()].directions[sub_idx.index()] {
-                        if net.graph.contains_node(direction) {
-                            if let Some(face) = tables.get_face(&net.graph[direction].pid) {
-                                route.entry(face.id).or_insert_with(|| {
-                                    let key_expr = Tables::get_best_key(
-                                        &tables.restree,
-                                        prefix,
-                                        suffix,
-                                        face.id,
-                                    );
-                                    (
-                                        face.clone(),
-                                        key_expr.to_owned(),
-                                        if source.index() != 0 {
-                                            Some(RoutingContext::new(source.index() as ZInt))
-                                        } else {
-                                            None
-                                        },
-                                    )
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+    let tree = match net.trees.get(source.index()) {
+        Some(tree) => tree,
+        None => {
+            log::trace!("Tree for node sid:{} not yet ready", source.index());
+            return;
         }
-    } else {
-        log::trace!("Tree for node sid:{} not yet ready", source.index());
-    }
+    };
+
+    (|| {
+        for sub in subs {
+            let sub_idx = net.get_idx(sub)?;
+            let direction = (*(tree.directions.get(sub_idx.index())?))?;
+            let node = net.graph.node_weight(direction)?;
+            let face = tables.get_face(&node.pid)?;
+
+            route.entry(face.id).or_insert_with(|| {
+                let key_expr = Tables::get_best_key(&tables.restree, prefix, suffix, face.id);
+                (
+                    face.clone(),
+                    key_expr.to_owned(),
+                    if source.index() != 0 {
+                        Some(RoutingContext::new(source.index() as ZInt))
+                    } else {
+                        None
+                    },
+                )
+            });
+        }
+
+        Some(())
+    })();
 }
 
 fn compute_data_route(
