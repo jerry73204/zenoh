@@ -922,12 +922,9 @@ pub(crate) fn queries_new_face(tables: &mut Tables, face: &Arc<FaceState>) {
         }
     }
     if tables.whatami == WhatAmI::Client {
-        for face in tables
-            .faces
-            .values()
-            .cloned()
-            .collect::<Vec<Arc<FaceState>>>()
-        {
+        let faces: Vec<Arc<FaceState>> = tables.faces.values().cloned().collect();
+
+        for face in faces {
             for (qabl, kind) in &face.remote_qabls {
                 propagate_simple_queryable(tables, qabl, *kind, None);
             }
