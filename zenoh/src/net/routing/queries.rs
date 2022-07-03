@@ -636,12 +636,12 @@ fn propagate_forget_sourced_queryable(
     let restree = &mut tables.restree;
     match net.get_idx(source) {
         Some(tree_sid) => {
-            if net.trees.len() > tree_sid.index() {
+            if let Some(tree) = net.trees.get(tree_sid.index()) {
                 send_forget_sourced_queryable_to_net_childs(
                     restree,
                     &tables.faces,
                     net,
-                    &net.trees[tree_sid.index()].childs,
+                    &tree.childs,
                     res,
                     kind,
                     src_face,
