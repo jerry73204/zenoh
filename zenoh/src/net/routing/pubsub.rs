@@ -1053,75 +1053,53 @@ fn get_data_route(
     suffix: &str,
     routing_context: Option<RoutingContext>,
 ) -> Arc<Route> {
-    match tables.whatami {
-        WhatAmI::Router => match face.whatami {
-            WhatAmI::Router => {
-                let routers_net = tables.routers_net.as_ref().unwrap();
-                let local_context = routers_net
-                    .get_local_context(routing_context.map(|rc| rc.tree_id), face.link_id);
-                res.as_ref()
-                    .and_then(|res| routers_data_route(tables, res, local_context))
-                    .unwrap_or_else(|| {
-                        compute_data_route(
-                            tables,
-                            prefix,
-                            suffix,
-                            Some(local_context),
-                            WhatAmI::Router,
-                        )
-                    })
-            }
-            WhatAmI::Peer => {
-                let peers_net = tables.peers_net.as_ref().unwrap();
-                let local_context =
-                    peers_net.get_local_context(routing_context.map(|rc| rc.tree_id), face.link_id);
-                res.as_ref()
-                    .and_then(|res| peers_data_route(tables, res, local_context))
-                    .unwrap_or_else(|| {
-                        compute_data_route(
-                            tables,
-                            prefix,
-                            suffix,
-                            Some(local_context),
-                            WhatAmI::Peer,
-                        )
-                    })
-            }
-            _ => res
-                .as_ref()
-                .and_then(|res| routers_data_route(tables, res, NodeIndex::new(0)))
+    use WhatAmI as W;
+
+    match (tables.whatami, face.whatami) {
+        (W::Router, W::Router) => {
+            let routers_net = tables.routers_net.as_ref().unwrap();
+            let local_context =
+                routers_net.get_local_context(routing_context.map(|rc| rc.tree_id), face.link_id);
+            res.as_ref()
+                .and_then(|res| routers_data_route(tables, res, local_context))
                 .unwrap_or_else(|| {
-                    compute_data_route(tables, prefix, suffix, None, WhatAmI::Client)
-                }),
-        },
-        WhatAmI::Peer => match face.whatami {
-            WhatAmI::Router | WhatAmI::Peer => {
-                let peers_net = tables.peers_net.as_ref().unwrap();
-                let local_context =
-                    peers_net.get_local_context(routing_context.map(|rc| rc.tree_id), face.link_id);
-                res.as_ref()
-                    .and_then(|res| peers_data_route(tables, res, local_context))
-                    .unwrap_or_else(|| {
-                        compute_data_route(
-                            tables,
-                            prefix,
-                            suffix,
-                            Some(local_context),
-                            WhatAmI::Peer,
-                        )
-                    })
-            }
-            _ => res
-                .as_ref()
-                .and_then(|res| peers_data_route(tables, res, NodeIndex::new(0)))
+                    compute_data_route(tables, prefix, suffix, Some(local_context), W::Router)
+                })
+        }
+        (W::Router, W::Peer) => {
+            let peers_net = tables.peers_net.as_ref().unwrap();
+            let local_context =
+                peers_net.get_local_context(routing_context.map(|rc| rc.tree_id), face.link_id);
+            res.as_ref()
+                .and_then(|res| peers_data_route(tables, res, local_context))
                 .unwrap_or_else(|| {
-                    compute_data_route(tables, prefix, suffix, None, WhatAmI::Client)
-                }),
-        },
-        _ => res
+                    compute_data_route(tables, prefix, suffix, Some(local_context), W::Peer)
+                })
+        }
+        (W::Router, W::Client) => res
+            .as_ref()
+            .and_then(|res| routers_data_route(tables, res, NodeIndex::new(0)))
+            .unwrap_or_else(|| compute_data_route(tables, prefix, suffix, None, W::Client)),
+
+        (W::Peer, W::Router | W::Peer) => {
+            let peers_net = tables.peers_net.as_ref().unwrap();
+            let local_context =
+                peers_net.get_local_context(routing_context.map(|rc| rc.tree_id), face.link_id);
+            res.as_ref()
+                .and_then(|res| peers_data_route(tables, res, local_context))
+                .unwrap_or_else(|| {
+                    compute_data_route(tables, prefix, suffix, Some(local_context), W::Peer)
+                })
+        }
+        (W::Peer, W::Client) => res
+            .as_ref()
+            .and_then(|res| peers_data_route(tables, res, NodeIndex::new(0)))
+            .unwrap_or_else(|| compute_data_route(tables, prefix, suffix, None, W::Client)),
+
+        (W::Client, _) => res
             .as_ref()
             .and_then(|res| client_data_route(tables, res))
-            .unwrap_or_else(|| compute_data_route(tables, prefix, suffix, None, WhatAmI::Client)),
+            .unwrap_or_else(|| compute_data_route(tables, prefix, suffix, None, W::Client)),
     }
 }
 
