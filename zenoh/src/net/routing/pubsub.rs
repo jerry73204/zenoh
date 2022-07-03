@@ -1024,8 +1024,8 @@ fn routers_data_route(
     context: NodeIndex,
 ) -> Option<Arc<Route>> {
     let ctx = tables.restree.weight(res);
-    (ctx.routers_data_routes.len() > context.index())
-        .then(|| ctx.routers_data_routes[context.index()].clone())
+    let route = ctx.routers_data_routes.get(context.index())?;
+    Some(route.clone())
 }
 
 #[inline(always)]
