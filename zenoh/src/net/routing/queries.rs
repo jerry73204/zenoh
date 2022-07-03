@@ -1402,8 +1402,8 @@ pub(super) fn routers_query_route(
     context: NodeIndex,
 ) -> Option<Arc<TargetQablSet>> {
     let ctx = tables.restree.weight(res);
-    (ctx.routers_query_routes.len() > context.index())
-        .then(|| ctx.routers_query_routes[context.index()].clone())
+    let route = ctx.routers_query_routes.get(context.index())?;
+    Some(route.clone())
 }
 
 #[inline(always)]
