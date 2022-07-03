@@ -643,12 +643,9 @@ pub(crate) fn pubsub_new_face(tables: &mut Tables, face: &Arc<FaceState>) {
         }
     }
     if tables.whatami == WhatAmI::Client {
-        for face in tables
-            .faces
-            .values()
-            .cloned()
-            .collect::<Vec<Arc<FaceState>>>()
-        {
+        let faces: Vec<Arc<FaceState>> = tables.faces.values().cloned().collect();
+
+        for face in faces {
             for sub in &face.remote_subs {
                 propagate_simple_subscription(tables, sub, &sub_info, &face.clone());
             }
