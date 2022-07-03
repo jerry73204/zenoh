@@ -331,7 +331,10 @@ fn register_router_queryable(
     router: PeerId,
 ) {
     let current_info = tables.restree.weight(res).router_qabls.get(&(router, kind));
-    if current_info.is_none() || current_info.unwrap() != qabl_info {
+
+    let is_registered = matches!(current_info, Some(info) if info == qabl_info);
+
+    if !is_registered {
         // Register router queryable
         {
             log::debug!(
