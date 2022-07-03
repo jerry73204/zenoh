@@ -916,13 +916,13 @@ fn compute_matching_pulls(
 
 pub(crate) fn compute_data_routes(tables: &mut Tables, res: &ResourceTreeIndex) {
     if tables.whatami == WhatAmI::Router {
-        let indexes = tables
+        let indexes: Vec<NodeIndex> = tables
             .routers_net
             .as_ref()
             .unwrap()
             .graph
             .node_indices()
-            .collect::<Vec<NodeIndex>>();
+            .collect();
         let max_idx = indexes.iter().max().unwrap();
         tables.restree.weight_mut(res).routers_data_routes.clear();
         tables
@@ -937,13 +937,13 @@ pub(crate) fn compute_data_routes(tables: &mut Tables, res: &ResourceTreeIndex) 
         }
     }
     if tables.whatami == WhatAmI::Router || tables.whatami == WhatAmI::Peer {
-        let indexes = tables
+        let indexes: Vec<NodeIndex> = tables
             .peers_net
             .as_ref()
             .unwrap()
             .graph
             .node_indices()
-            .collect::<Vec<NodeIndex>>();
+            .collect();
         let max_idx = indexes.iter().max().unwrap();
         tables.restree.weight_mut(res).peers_data_routes.clear();
         tables
