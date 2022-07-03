@@ -767,14 +767,14 @@ fn insert_faces_for_subs(
     suffix: &str,
     tables: &Tables,
     net: &Network,
-    source: usize,
+    source: NodeIndex,
     subs: &VecSet<PeerId>,
 ) {
-    if net.trees.len() > source {
+    if net.trees.len() > source.index() {
         for sub in subs {
             if let Some(sub_idx) = net.get_idx(sub) {
-                if net.trees[source].directions.len() > sub_idx.index() {
-                    if let Some(direction) = net.trees[source].directions[sub_idx.index()] {
+                if net.trees[source.index()].directions.len() > sub_idx.index() {
+                    if let Some(direction) = net.trees[source.index()].directions[sub_idx.index()] {
                         if net.graph.contains_node(direction) {
                             if let Some(face) = tables.get_face(&net.graph[direction].pid) {
                                 route.entry(face.id).or_insert_with(|| {
@@ -787,8 +787,8 @@ fn insert_faces_for_subs(
                                     (
                                         face.clone(),
                                         key_expr.to_owned(),
-                                        if source != 0 {
-                                            Some(RoutingContext::new(source as ZInt))
+                                        if source.index() != 0 {
+                                            Some(RoutingContext::new(source.index() as ZInt))
                                         } else {
                                             None
                                         },
@@ -801,7 +801,7 @@ fn insert_faces_for_subs(
             }
         }
     } else {
-        log::trace!("Tree for node sid:{} not yet ready", source);
+        log::trace!("Tree for node sid:{} not yet ready", source.index());
     }
 }
 
@@ -809,7 +809,7 @@ fn compute_data_route(
     tables: &Tables,
     prefix: &ResourceTreeIndex,
     suffix: &str,
-    source: Option<usize>,
+    source: Option<NodeIndex>,
     source_type: WhatAmI,
 ) -> Arc<Route> {
     let mut route = HashMap::new();
@@ -829,7 +829,7 @@ fn compute_data_route(
                 let net = tables.routers_net.as_ref().unwrap();
                 let router_source = match source_type {
                     WhatAmI::Router => source.unwrap(),
-                    _ => net.idx.index(),
+                    _ => net.idx,
                 };
                 insert_faces_for_subs(
                     &mut route,
@@ -846,7 +846,7 @@ fn compute_data_route(
                 let net = tables.peers_net.as_ref().unwrap();
                 let peer_source = match source_type {
                     WhatAmI::Peer => source.unwrap(),
-                    _ => net.idx.index(),
+                    _ => net.idx,
                 };
                 insert_faces_for_subs(
                     &mut route,
@@ -864,7 +864,7 @@ fn compute_data_route(
             let net = tables.peers_net.as_ref().unwrap();
             let peer_source = match source_type {
                 WhatAmI::Router | WhatAmI::Peer => source.unwrap(),
-                _ => net.idx.index(),
+                _ => net.idx,
             };
             insert_faces_for_subs(
                 &mut route,
@@ -935,8 +935,8 @@ pub(crate) fn compute_data_routes(tables: &mut Tables, res: &ResourceTreeIndex) 
             .routers_data_routes
             .resize_with(max_idx.index() + 1, || Arc::new(HashMap::new()));
 
-        for idx in &indexes {
-            let route = compute_data_route(tables, res, "", Some(idx.index()), WhatAmI::Peer);
+        for &idx in &indexes {
+            let route = compute_data_route(tables, res, "", Some(idx), WhatAmI::Peer);
             tables.restree.weight_mut(res).routers_data_routes[idx.index()] = route;
         }
     }
@@ -956,8 +956,8 @@ pub(crate) fn compute_data_routes(tables: &mut Tables, res: &ResourceTreeIndex) 
             .peers_data_routes
             .resize_with(max_idx.index() + 1, || Arc::new(HashMap::new()));
 
-        for idx in &indexes {
-            let route = compute_data_route(tables, res, "", Some(idx.index()), WhatAmI::Peer);
+        for &idx in &indexes {
+            let route = compute_data_route(tables, res, "", Some(idx), WhatAmI::Peer);
             tables.restree.weight_mut(res).peers_data_routes[idx.index()] = route;
         }
     }
@@ -1025,20 +1025,22 @@ macro_rules! treat_timestamp {
 fn routers_data_route(
     tables: &Tables,
     res: &ResourceTreeIndex,
-    context: usize,
+    context: NodeIndex,
 ) -> Option<Arc<Route>> {
     let ctx = tables.restree.weight(res);
-    (ctx.routers_data_routes.len() > context).then(|| ctx.routers_data_routes[context].clone())
+    (ctx.routers_data_routes.len() > context.index())
+        .then(|| ctx.routers_data_routes[context.index()].clone())
 }
 
 #[inline(always)]
 fn peers_data_route(
     tables: &Tables,
     res: &ResourceTreeIndex,
-    context: usize,
+    context: NodeIndex,
 ) -> Option<Arc<Route>> {
     let ctx = tables.restree.weight(res);
-    (ctx.peers_data_routes.len() > context).then(|| ctx.peers_data_routes[context].clone())
+    (ctx.peers_data_routes.len() > context.index())
+        .then(|| ctx.peers_data_routes[context.index()].clone())
 }
 
 #[inline(always)]
@@ -1091,7 +1093,7 @@ fn get_data_route(
             }
             _ => res
                 .as_ref()
-                .and_then(|res| routers_data_route(tables, res, 0))
+                .and_then(|res| routers_data_route(tables, res, NodeIndex::new(0)))
                 .unwrap_or_else(|| {
                     compute_data_route(tables, prefix, suffix, None, WhatAmI::Client)
                 }),
@@ -1115,7 +1117,7 @@ fn get_data_route(
             }
             _ => res
                 .as_ref()
-                .and_then(|res| peers_data_route(tables, res, 0))
+                .and_then(|res| peers_data_route(tables, res, NodeIndex::new(0)))
                 .unwrap_or_else(|| {
                     compute_data_route(tables, prefix, suffix, None, WhatAmI::Client)
                 }),
