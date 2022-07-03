@@ -355,7 +355,7 @@ impl Primitives for Face {
         routing_context: Option<RoutingContext>,
     ) {
         route_query(
-            &self.tables,
+            &mut *zwrite!(self.tables),
             &self.state,
             key_expr,
             value_selector,
