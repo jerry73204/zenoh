@@ -1413,8 +1413,8 @@ pub(super) fn peers_query_route(
     context: NodeIndex,
 ) -> Option<Arc<TargetQablSet>> {
     let ctx = tables.restree.weight(res);
-    (ctx.peers_query_routes.len() > context.index())
-        .then(|| ctx.peers_query_routes[context.index()].clone())
+    let route = ctx.peers_query_routes.get(context.index())?;
+    Some(route.clone())
 }
 
 #[inline(always)]
