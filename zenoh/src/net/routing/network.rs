@@ -662,25 +662,45 @@ impl Network {
     }
 
     pub(crate) fn compute_trees(&mut self) -> Vec<Vec<NodeIndex>> {
-        let indexes = self.graph.node_indices().collect::<Vec<NodeIndex>>();
-        let max_idx = indexes.iter().max().unwrap();
+        /* This algorithm reconstructs self.trees. The self.trees is a
+         * (sid -> Tree) map, where sid is exactly an index of a node
+         * in the graph. */
 
-        let old_childs: Vec<Vec<NodeIndex>> = self.trees.iter().map(|t| t.childs.clone()).collect();
+        // Save the node indices from the graph
+        let indexes: Vec<NodeIndex> = self.graph.node_indices().collect();
+        let num_trees = indexes.iter().max().unwrap().index() + 1;
 
-        self.trees.clear();
-        self.trees.resize_with(max_idx.index() + 1, || Tree {
+        // Clean up self.trees and save the "childs" of each tree from self.trees
+        let old_childs: Vec<Vec<NodeIndex>> = self.trees.drain(..).map(|t| t.childs).collect();
+
+        /* Populate self.trees with empty Tree contexts for each sid, A Tree
+         * context stores the following fields:
+         *
+         * - parent: the ingress neightbor node to myself, if coming from the sid.
+         * - childs: the exgress neightbor nodes from myself, if coming from the sid.
+         * - directions: a (dest_node -> neightbor_node) map to look up the outbound
+         *               neightbor to go for a destination node.
+         */
+        self.trees.resize_with(num_trees, || Tree {
             parent: None,
-            childs: vec![],
-            directions: vec![],
+            childs: Vec::with_capacity(num_trees),
+            directions: Vec::with_capacity(num_trees),
         });
 
-        for tree_root_idx in &indexes {
-            let paths = petgraph::algo::bellman_ford(&self.graph, *tree_root_idx).unwrap();
+        // Loop through available indices to constructhe the trees one
+        // by one.
+        for &tree_root_idx in &indexes {
+            // Run Bellman-Ford, starting at the interested node,
+            // which is called tree_root_index here.
+            let paths = petgraph::algo::bellman_ford(&self.graph, tree_root_idx).unwrap();
 
+            // If the current node index is zero, it's a special case the
+            // starting node is myself. Store the distance table by the way.
             if tree_root_idx.index() == 0 {
                 self.distances = paths.distances;
             }
 
+            // Debug message
             if log::log_enabled!(log::Level::Debug) {
                 let ps: Vec<Option<String>> = paths
                     .predecessors
@@ -696,68 +716,89 @@ impl Network {
                         })
                     })
                     .collect();
-                log::debug!("Tree {} {:?}", self.graph[*tree_root_idx].pid, ps);
+                log::debug!("Tree {} {:?}", self.graph[tree_root_idx].pid, ps);
             }
 
-            self.trees[tree_root_idx.index()].parent = paths.predecessors[self.idx.index()];
+            // Save the ingress neighbor to myself according to Bellman-Ford.
+            let root_tree = &mut self.trees[tree_root_idx.index()];
+            root_tree.parent = paths.predecessors[self.idx.index()];
 
-            for idx in &indexes {
+            // Save the exgress neighbors from myself according to Bellman-Ford.
+            //
+            // It uses an inefficient algorithm to scan all nodes in the graph,
+            // and check if each node is an outbound node from myself.
+            for &idx in &indexes {
                 if let Some(parent_idx) = paths.predecessors[idx.index()] {
                     if parent_idx == self.idx {
-                        self.trees[tree_root_idx.index()].childs.push(*idx);
+                        root_tree.childs.push(idx);
                     }
                 }
             }
 
-            self.trees[tree_root_idx.index()]
-                .directions
-                .resize_with(max_idx.index() + 1, || None);
-            let mut dfs = petgraph::algo::DfsSpace::new(&self.graph);
-            for destination in &indexes {
-                if self.idx != *destination
-                    && petgraph::algo::has_path_connecting(
-                        &self.graph,
-                        self.idx,
-                        *destination,
-                        Some(&mut dfs),
-                    )
-                {
-                    let mut direction = None;
-                    let mut current = *destination;
-                    while let Some(parent) = paths.predecessors[current.index()] {
-                        if parent == self.idx {
-                            direction = Some(current);
-                            break;
-                        } else {
-                            current = parent;
-                        }
-                    }
+            // Populate initial values to the "directions" field.
+            root_tree.directions.resize_with(num_trees, || None);
 
-                    self.trees[tree_root_idx.index()].directions[destination.index()] =
-                        match direction {
-                            Some(direction) => Some(direction),
-                            None => self.trees[tree_root_idx.index()].parent,
-                        };
+            // The DFS space is used to check if two nodes are connected.
+            let mut dfs = petgraph::algo::DfsSpace::new(&self.graph);
+
+            // Loop over available node indices, each treated as the
+            // destination node from myself in each loop.
+            for &destination in &indexes {
+                // Skip the case when the destination is myself.
+                if self.idx == destination {
+                    continue;
                 }
+
+                // Check if there is a path from myself to the destination.
+                // If not, skip this loop.
+                let is_connected = petgraph::algo::has_path_connecting(
+                    &self.graph,
+                    self.idx,
+                    destination,
+                    Some(&mut dfs),
+                );
+
+                if !is_connected {
+                    continue;
+                }
+
+                // Traverse from the destination to myself using the
+                // "predecessors" table from Bellman-Ford. Eventually,
+                // it will find the outbound neighbor of myself to go
+                // to the destination.
+                let mut direction = None;
+                let mut current = destination;
+                while let Some(parent) = paths.predecessors[current.index()] {
+                    if parent == self.idx {
+                        direction = Some(current);
+                        break;
+                    } else {
+                        current = parent;
+                    }
+                }
+
+                // If the outbound neighbor is found, save it. If not,
+                // set the outbound neighbor to the ingress neighbor, working as a "rejection".
+                root_tree.directions[destination.index()] = match direction {
+                    Some(direction) => Some(direction),
+                    None => root_tree.parent,
+                };
             }
         }
 
-        let mut new_childs = Vec::with_capacity(self.trees.len());
-        new_childs.resize(self.trees.len(), vec![]);
-
-        for i in 0..new_childs.len() {
-            new_childs[i] = if i < old_childs.len() {
+        let new_childs = {
+            let old_part = old_childs.iter().enumerate().map(|(i, old_child)| {
                 self.trees[i]
                     .childs
                     .iter()
-                    .filter(|idx| !old_childs[i].contains(idx))
+                    .filter(|idx| !old_child.contains(idx))
                     .cloned()
                     .collect()
-            } else {
-                self.trees[i].childs.clone()
-            };
-        }
+            });
+            let new_part = (old_childs.len()..num_trees).map(|i| self.trees[i].childs.clone());
 
+            old_part.chain(new_part).collect()
+        };
         new_childs
     }
 
