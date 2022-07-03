@@ -714,8 +714,8 @@ pub(crate) fn pubsub_tree_change(
     for (tree_sid, tree_childs) in new_childs.iter().enumerate() {
         if !tree_childs.is_empty() {
             let tree_idx = NodeIndex::new(tree_sid);
-            if net.graph.contains_node(tree_idx) {
-                let tree_id = net.graph[tree_idx].pid;
+            if let Some(node) = net.graph.node_weight(tree_idx) {
+                let tree_id = node.pid;
 
                 let subs_res = match net_type {
                     WhatAmI::Router => &tables.router_subs,
