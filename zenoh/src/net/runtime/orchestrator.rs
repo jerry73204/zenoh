@@ -74,7 +74,7 @@ impl Runtime {
                     .map(AsRef::as_ref)
                     .unwrap_or("auto")
                     .to_owned(),
-                std::time::Duration::from_millis(guard.scouting().timeout().unwrap_or(3000)),
+                Duration::from_millis(guard.scouting().timeout().unwrap_or(3000)),
             )
         };
         match peers.len() {
@@ -146,7 +146,7 @@ impl Runtime {
                     .map(AsRef::as_ref)
                     .unwrap_or_else(|| ZN_MULTICAST_INTERFACE_DEFAULT)
                     .to_string(),
-                std::time::Duration::from_millis(guard.scouting().delay().unwrap_or(200)),
+                Duration::from_millis(guard.scouting().delay().unwrap_or(200)),
             )
         };
 
@@ -272,7 +272,7 @@ impl Runtime {
                     .unwrap()
                     .unwrap()
                     .as_any()
-                    .downcast_ref::<super::RuntimeSession>()
+                    .downcast_ref::<RuntimeSession>()
                 {
                     if let Some(endpoint) = &*zread!(orch_transport.endpoint) {
                         !peers.contains(endpoint)
@@ -294,7 +294,7 @@ impl Runtime {
                         .unwrap()
                         .unwrap()
                         .as_any()
-                        .downcast_ref::<super::RuntimeSession>()
+                        .downcast_ref::<RuntimeSession>()
                     {
                         if let Some(endpoint) = &*zread!(orch_transport.endpoint) {
                             return *endpoint == peer;
@@ -475,7 +475,7 @@ impl Runtime {
                     .unwrap()
                     .unwrap()
                     .as_any()
-                    .downcast_ref::<super::RuntimeSession>()
+                    .downcast_ref::<RuntimeSession>()
                 {
                     *zwrite!(orch_transport.endpoint) = Some(peer);
                 }
@@ -500,8 +500,8 @@ impl Runtime {
         mcast_addr: &SocketAddr,
         mut f: F,
     ) where
-        F: FnMut(Hello) -> Fut + std::marker::Send + Copy,
-        Fut: Future<Output = Loop> + std::marker::Send,
+        F: FnMut(Hello) -> Fut + Send + Copy,
+        Fut: Future<Output = Loop> + Send,
         Self: Sized,
     {
         let send = async {
@@ -614,7 +614,7 @@ impl Runtime {
         sockets: &[UdpSocket],
         what: I,
         addr: &SocketAddr,
-        timeout: std::time::Duration,
+        timeout: Duration,
     ) -> ZResult<()> {
         let scout = async {
             Runtime::scout(sockets, what.into(), addr, move |hello| async move {
@@ -756,7 +756,7 @@ impl Runtime {
                 session.runtime.spawn(async move {
                     let mut delay = CONNECTION_RETRY_INITIAL_PERIOD;
                     while runtime.start_client().await.is_err() {
-                        async_std::task::sleep(std::time::Duration::from_millis(delay)).await;
+                        async_std::task::sleep(Duration::from_millis(delay)).await;
                         delay *= CONNECTION_RETRY_PERIOD_INCREASE_FACTOR;
                         if delay > CONNECTION_RETRY_MAX_PERIOD {
                             delay = CONNECTION_RETRY_MAX_PERIOD;

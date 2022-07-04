@@ -25,6 +25,8 @@ use futures::stream::StreamExt;
 use futures::Future;
 use std::any::Any;
 use std::sync::Arc;
+use std::ops::Deref;
+use std::sync::RwLock;
 use std::time::Duration;
 use stop_token::future::FutureExt;
 use stop_token::{StopSource, TimedOutError};
@@ -49,7 +51,7 @@ pub struct RuntimeState {
     pub config: Notifier<Config>,
     pub manager: TransportManager,
     pub hlc: Option<Arc<HLC>>,
-    pub(crate) stop_source: std::sync::RwLock<Option<StopSource>>,
+    pub(crate) stop_source: RwLock<Option<StopSource>>,
 }
 
 #[derive(Clone)]
@@ -57,7 +59,7 @@ pub struct Runtime {
     state: Arc<RuntimeState>,
 }
 
-impl std::ops::Deref for Runtime {
+impl Deref for Runtime {
     type Target = RuntimeState;
 
     fn deref(&self) -> &RuntimeState {
@@ -110,7 +112,7 @@ impl Runtime {
         ));
 
         let handler = Arc::new(RuntimeTransportEventHandler {
-            runtime: std::sync::RwLock::new(None),
+            runtime: RwLock::new(None),
         });
 
         let transport_manager = TransportManager::builder()
@@ -130,7 +132,7 @@ impl Runtime {
                 config: config.clone(),
                 manager: transport_manager,
                 hlc,
-                stop_source: std::sync::RwLock::new(Some(StopSource::new())),
+                stop_source: RwLock::new(Some(StopSource::new())),
             }),
         };
         *handler.runtime.write().unwrap() = Some(runtime.clone());
@@ -197,7 +199,7 @@ impl Runtime {
 }
 
 struct RuntimeTransportEventHandler {
-    runtime: std::sync::RwLock<Option<Runtime>>,
+    runtime: RwLock<Option<Runtime>>,
 }
 
 impl TransportEventHandler for RuntimeTransportEventHandler {
@@ -209,7 +211,7 @@ impl TransportEventHandler for RuntimeTransportEventHandler {
         match zread!(self.runtime).as_ref() {
             Some(runtime) => Ok(Arc::new(RuntimeSession {
                 runtime: runtime.clone(),
-                endpoint: std::sync::RwLock::new(None),
+                endpoint: RwLock::new(None),
                 sub_event_handler: runtime.router.new_transport_unicast(transport).unwrap(),
             })),
             None => bail!("Runtime not yet ready!"),
@@ -227,7 +229,7 @@ impl TransportEventHandler for RuntimeTransportEventHandler {
 
 pub(super) struct RuntimeSession {
     pub(super) runtime: Runtime,
-    pub(super) endpoint: std::sync::RwLock<Option<EndPoint>>,
+    pub(super) endpoint: RwLock<Option<EndPoint>>,
     pub(super) sub_event_handler: Arc<LinkStateInterceptor>,
 }
 

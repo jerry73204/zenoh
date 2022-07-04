@@ -18,9 +18,9 @@ use async_std::task;
 use futures::future::{BoxFuture, FutureExt};
 use log::{error, trace};
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::{collections::HashMap, panic::AssertUnwindSafe};
 use zenoh_buffers::{SplitBuffer, ZBuf};
 use zenoh_config::ValidatedMap;
 use zenoh_protocol::proto::{data_kind, DataInfo, RoutingContext};
@@ -625,7 +625,7 @@ pub async fn plugins_status(
             if !with_extended_string(plugin_key, &["/**"], matches_plugin) {
                 return;
             }
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match std::panic::catch_unwind(AssertUnwindSafe(|| {
                         plugin.adminspace_getter(&selector, plugin_key)
                     })) {
                         Ok(Ok(response)) => responses.extend(response),
