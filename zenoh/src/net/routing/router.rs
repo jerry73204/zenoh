@@ -827,7 +827,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
 
         match (tables.whatami, whatami) {
             (W::Router, W::Router) => {
-                for (_, removed_node) in tables.routers_net.as_mut().unwrap().remove_link(&pid) {
+                for (_, removed_node) in tables.routers_net.as_mut().unwrap().remove_link(pid) {
                     pubsub_remove_node(&mut tables, &removed_node.pid, W::Router);
                     queries_remove_node(&mut tables, &removed_node.pid, W::Router);
                 }
@@ -841,7 +841,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
                 tables.schedule_compute_trees(tables_ref.clone(), W::Router);
             }
             (W::Router, W::Peer) | (W::Peer, W::Router | W::Peer) => {
-                for (_, removed_node) in tables.peers_net.as_mut().unwrap().remove_link(&pid) {
+                for (_, removed_node) in tables.peers_net.as_mut().unwrap().remove_link(pid) {
                     pubsub_remove_node(&mut tables, &removed_node.pid, W::Peer);
                     queries_remove_node(&mut tables, &removed_node.pid, W::Peer);
                 }

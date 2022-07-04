@@ -107,8 +107,8 @@ impl FaceState {
         match routing_context {
             Some(routing_context) => {
                 match tables.routers_net.as_ref().unwrap().get_link(self.link_id) {
-                    Some(link) => match link.get_pid(&routing_context.tree_id) {
-                        Some(router) => Some(*router),
+                    Some(link) => match link.get_pid_by_rpsid(routing_context.tree_id) {
+                        Some(router) => Some(router),
                         None => {
                             log::error!(
                                 "Received router declaration with unknown routing context id {}",
@@ -141,8 +141,8 @@ impl FaceState {
         match routing_context {
             Some(routing_context) => {
                 match tables.peers_net.as_ref().unwrap().get_link(self.link_id) {
-                    Some(link) => match link.get_pid(&routing_context.tree_id) {
-                        Some(router) => Some(*router),
+                    Some(link) => match link.get_pid_by_rpsid(routing_context.tree_id) {
+                        Some(router) => Some(router),
                         None => {
                             log::error!(
                                 "Received peer declaration with unknown routing context id {}",

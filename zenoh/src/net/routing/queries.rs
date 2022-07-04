@@ -292,7 +292,7 @@ fn propagate_sourced_queryable(
 ) {
     let net = net!(tables, net_type).unwrap();
     let restree = &mut tables.restree;
-    match net.get_idx(source) {
+    match net.get_idx(*source) {
         Some(tree_sid) => {
             if let Some(tree) = net.trees.get(tree_sid.index()) {
                 send_sourced_queryable_to_net_childs(
@@ -635,7 +635,7 @@ fn propagate_forget_sourced_queryable(
 ) {
     let net = net!(tables, net_type).unwrap();
     let restree = &mut tables.restree;
-    match net.get_idx(source) {
+    match net.get_idx(*source) {
         Some(tree_sid) => {
             if let Some(tree) = net.trees.get(tree_sid.index()) {
                 send_forget_sourced_queryable_to_net_childs(
@@ -1075,7 +1075,7 @@ fn insert_target_for_qabls(
 
     (|| {
         for ((qabl, qabl_kind), qabl_info) in qabls {
-            let qabl_idx = net.get_idx(qabl)?;
+            let qabl_idx = net.get_idx(*qabl)?;
             let direction = (*(tree.directions.get(qabl_idx.index())?))?;
             let node = net.graph.node_weight(direction)?;
             let face = tables.get_face(&node.pid)?;

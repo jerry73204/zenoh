@@ -57,8 +57,10 @@ impl fmt::Debug for Node {
 pub(crate) struct Link {
     pub(crate) transport: TransportUnicast,
     pid: PeerId,
-    mappings: VecMap<PeerId>,
-    local_mappings: VecMap<ZInt>,
+    /// Remote PSID (rpsid) to PeerId (pid) mappings
+    rpsid_to_pid: VecMap<PeerId>,
+    /// Remote PSID (rpsid) to local PSID (lpsid) mappings
+    rpsid_to_lpsid: VecMap<NodeIndex>,
 }
 
 impl Link {
@@ -67,29 +69,29 @@ impl Link {
         Link {
             transport,
             pid,
-            mappings: VecMap::new(),
-            local_mappings: VecMap::new(),
+            rpsid_to_pid: VecMap::new(),
+            rpsid_to_lpsid: VecMap::new(),
         }
     }
 
     #[inline]
-    pub(crate) fn set_pid_mapping(&mut self, psid: ZInt, pid: PeerId) {
-        self.mappings.insert(psid as usize, pid);
+    pub(crate) fn set_rpsid_to_pid(&mut self, remote_psid: ZInt, pid: PeerId) {
+        self.rpsid_to_pid.insert(remote_psid as usize, pid);
     }
 
     #[inline]
-    pub(crate) fn get_pid(&self, psid: &ZInt) -> Option<&PeerId> {
-        self.mappings.get((*psid) as usize)
+    pub(crate) fn get_pid_by_rpsid(&self, remote_psid: ZInt) -> Option<PeerId> {
+        self.rpsid_to_pid.get(remote_psid as usize).cloned()
     }
 
     #[inline]
-    pub(crate) fn set_local_psid_mapping(&mut self, psid: ZInt, local_psid: ZInt) {
-        self.local_mappings.insert(psid as usize, local_psid);
+    pub(crate) fn set_rpsid_to_lpsid(&mut self, remote_psid: ZInt, local_psid: NodeIndex) {
+        self.rpsid_to_lpsid.insert(remote_psid as usize, local_psid);
     }
 
     #[inline]
-    pub(crate) fn get_local_psid(&self, psid: &ZInt) -> Option<&ZInt> {
-        self.local_mappings.get((*psid) as usize)
+    pub(crate) fn get_lpsid_by_rpsid(&self, remote_psid: ZInt) -> Option<NodeIndex> {
+        self.rpsid_to_lpsid.get(remote_psid as usize).cloned()
     }
 }
 
@@ -153,10 +155,10 @@ impl Network {
     }
 
     #[inline]
-    pub(crate) fn get_idx(&self, pid: &PeerId) -> Option<NodeIndex> {
+    pub(crate) fn get_idx(&self, pid: PeerId) -> Option<NodeIndex> {
         self.graph
             .node_references()
-            .find_map(|(idx, node)| (node.pid == *pid).then(|| idx))
+            .find_map(|(idx, node)| (node.pid == pid).then(|| idx))
     }
 
     #[inline]
@@ -165,16 +167,16 @@ impl Network {
     }
 
     #[inline]
-    pub(crate) fn get_link_from_pid(&self, pid: &PeerId) -> Option<&Link> {
-        self.links.values().find(|link| link.pid == *pid)
+    pub(crate) fn get_link_from_pid(&self, pid: PeerId) -> Option<&Link> {
+        self.links.values().find(|link| link.pid == pid)
     }
 
     #[inline]
     pub(crate) fn get_local_context(&self, context: Option<ZInt>, link_id: LinkId) -> NodeIndex {
         let context = context.unwrap_or(0);
         match self.get_link(link_id) {
-            Some(link) => match link.get_local_psid(&context) {
-                Some(&psid) => NodeIndex::new(psid as usize),
+            Some(link) => match link.get_lpsid_by_rpsid(context) {
+                Some(psid) => psid,
                 None => {
                     log::error!(
                         "Cannot find local psid for context {} on link {}",
@@ -202,11 +204,11 @@ impl Network {
         self.links
             .values_mut()
             .filter_map(|link| {
-                let (psid, _) = link.mappings.iter().find(|&(_, &p)| p == pid)?;
+                let (psid, _) = link.rpsid_to_pid.iter().find(|&(_, &p)| p == pid)?;
                 Some((link, psid))
             })
             .for_each(|(link, psid)| {
-                link.local_mappings.insert(psid, idx.index() as ZInt);
+                link.rpsid_to_lpsid.insert(psid, idx);
             });
         idx
     }
@@ -217,7 +219,7 @@ impl Network {
         let links = node
             .links
             .iter()
-            .filter_map(|pid| {
+            .filter_map(|&pid| {
                 if let Some(idx2) = self.get_idx(pid) {
                     Some(idx2.index() as ZInt)
                 } else {
@@ -334,9 +336,9 @@ impl Network {
             .into_iter()
             .filter_map(|link_state| {
                 if let Some(pid) = link_state.pid {
-                    src_link.set_pid_mapping(link_state.psid, pid);
+                    src_link.set_rpsid_to_pid(link_state.psid, pid);
                     if let Some(idx) = graph.node_indices().find(|idx| graph[*idx].pid == pid) {
-                        src_link.set_local_psid_mapping(link_state.psid, idx.index() as u64);
+                        src_link.set_rpsid_to_lpsid(link_state.psid, idx);
                     }
                     Some((
                         pid,
@@ -346,9 +348,9 @@ impl Network {
                         link_state.links,
                     ))
                 } else {
-                    match src_link.get_pid(&link_state.psid) {
+                    match src_link.get_pid_by_rpsid(link_state.psid) {
                         Some(pid) => Some((
-                            *pid,
+                            pid,
                             link_state.whatami.unwrap_or(WhatAmI::Router),
                             link_state.locators,
                             link_state.sn,
@@ -368,15 +370,15 @@ impl Network {
             .collect();
 
         // apply psid<->pid mapping to links
-        let src_link = self.get_link_from_pid(&src).unwrap();
+        let src_link = self.get_link_from_pid(src).unwrap();
         let link_states: Vec<_> = link_states
             .into_iter()
             .map(|(pid, wai, locs, sn, links)| {
                 let links: Vec<PeerId> = links
                     .iter()
-                    .filter_map(|l| {
-                        if let Some(pid) = src_link.get_pid(l) {
-                            Some(*pid)
+                    .filter_map(|&l| {
+                        if let Some(pid) = src_link.get_pid_by_rpsid(l) {
+                            Some(pid)
                         } else {
                             log::error!(
                                 "{} Received LinkState from {} with unknown link mapping {}",
@@ -411,7 +413,7 @@ impl Network {
         let mut link_states: Vec<(Vec<PeerId>, NodeIndex, bool)> = link_states
             .into_iter()
             .filter_map(
-                |(pid, whatami, locators, sn, links)| match self.get_idx(&pid) {
+                |(pid, whatami, locators, sn, links)| match self.get_idx(pid) {
                     Some(idx) => {
                         let node = &mut self.graph[idx];
                         let oldsn = node.sn;
@@ -449,7 +451,7 @@ impl Network {
         // Add/remove edges from graph
         let mut reintroduced_nodes = vec![];
         for (links, idx1, _) in &link_states {
-            for link in links {
+            for &link in links {
                 if let Some(idx2) = self.get_idx(link) {
                     if self.graph[idx2].links.contains(&self.graph[*idx1].pid) {
                         log::trace!(
@@ -462,7 +464,7 @@ impl Network {
                     }
                 } else {
                     let node = Node {
-                        pid: *link,
+                        pid: link,
                         whatami: None,
                         locators: None,
                         sn: 0,
@@ -573,7 +575,7 @@ impl Network {
 
         let pid = transport.get_pid().unwrap();
         let whatami = transport.get_whatami().unwrap();
-        let (idx, new) = match self.get_idx(&pid) {
+        let (idx, new) = match self.get_idx(pid) {
             Some(idx) => (idx, false),
             None => {
                 log::debug!("{} Add node (link) {}", self.name, pid);
@@ -611,10 +613,10 @@ impl Network {
         LinkId::new(free_index)
     }
 
-    pub(crate) fn remove_link(&mut self, pid: &PeerId) -> Vec<(NodeIndex, Node)> {
+    pub(crate) fn remove_link(&mut self, pid: PeerId) -> Vec<(NodeIndex, Node)> {
         log::trace!("{} remove_link {}", self.name, pid);
-        self.links.retain(|_, link| link.pid != *pid);
-        self.graph[self.idx].links.retain(|link| *link != *pid);
+        self.links.retain(|_, link| link.pid != pid);
+        self.graph[self.idx].links.retain(|link| *link != pid);
 
         if let Some((edge, _)) = self
             .get_idx(pid)
@@ -630,7 +632,7 @@ impl Network {
         let links: Vec<ZInt> = self
             .links
             .values()
-            .map(|link| self.get_idx(&link.pid).unwrap().index() as ZInt)
+            .map(|link| self.get_idx(link.pid).unwrap().index() as ZInt)
             .collect();
 
         let msg = ZenohMessage::make_link_state_list(
@@ -659,7 +661,7 @@ impl Network {
         let mut visit_map = self.graph.visit_map();
         while let Some(node) = dfs_stack.pop() {
             if visit_map.visit(node) {
-                for succpid in &self.graph[node].links {
+                for &succpid in &self.graph[node].links {
                     if let Some(succ) = self.get_idx(succpid) {
                         if !visit_map.is_visited(&succ) {
                             dfs_stack.push(succ);
