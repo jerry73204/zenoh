@@ -263,19 +263,21 @@ impl Network {
         }
     }
 
-    fn send_on_links<P>(&self, idxs: Vec<(NodeIndex, bool)>, mut value_selector: P)
+    fn send_on_links<I, P>(&self, idxs: I, mut value_selector: P)
     where
+        I: IntoIterator<Item = (NodeIndex, bool)>,
         P: FnMut(&Link) -> bool,
     {
         let msg = self.make_msg(idxs);
-        for link in self.links.values() {
-            if value_selector(link) {
+        self.links
+            .values()
+            .filter(|link| value_selector(link))
+            .for_each(|link| {
                 log::trace!("{} Send to {} {:?}", self.name, link.pid, msg);
                 if let Err(e) = link.transport.handle_message(msg.clone()) {
                     log::debug!("{} Error sending LinkStateList: {}", self.name, e);
                 }
-            }
-        }
+            });
     }
 
     fn update_edge(&mut self, idx1: NodeIndex, idx2: NodeIndex) {
