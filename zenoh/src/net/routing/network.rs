@@ -14,8 +14,10 @@
 use super::runtime::Runtime;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{VisitMap, Visitable};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::fmt;
+use std::hash::Hasher;
 use vec_map::VecMap;
 use zenoh_link::Locator;
 use zenoh_protocol::core::{PeerId, WhatAmI, ZInt};
@@ -276,15 +278,19 @@ impl Network {
     }
 
     fn update_edge(&mut self, idx1: NodeIndex, idx2: NodeIndex) {
-        use std::hash::Hasher;
-        let mut hasher = std::collections::hash_map::DefaultHasher::default();
-        if self.graph[idx1].pid.as_slice() > self.graph[idx2].pid.as_slice() {
-            hasher.write(self.graph[idx2].pid.as_slice());
-            hasher.write(self.graph[idx1].pid.as_slice());
+        let mut hasher = DefaultHasher::default();
+        let slice1 = self.graph[idx1].pid.as_slice();
+        let slice2 = self.graph[idx2].pid.as_slice();
+
+        let (min_slice, max_slice) = if slice1 <= slice2 {
+            (slice1, slice2)
         } else {
-            hasher.write(self.graph[idx1].pid.as_slice());
-            hasher.write(self.graph[idx2].pid.as_slice());
-        }
+            (slice2, slice1)
+        };
+
+        hasher.write(min_slice);
+        hasher.write(max_slice);
+
         let weight = 100.0 + ((hasher.finish() as u32) as f64) / u32::MAX as f64;
         self.graph.update_edge(idx1, idx2, weight);
     }
