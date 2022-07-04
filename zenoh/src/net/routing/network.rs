@@ -549,13 +549,7 @@ impl Network {
     }
 
     pub(crate) fn add_link(&mut self, transport: TransportUnicast) -> LinkId {
-        let free_index = {
-            let mut i = 0;
-            while self.links.contains_key(i) {
-                i += 1;
-            }
-            i
-        };
+        let free_index = (0..).find(|&idx| !self.links.contains_key(idx)).unwrap();
         self.links.insert(free_index, Link::new(transport.clone()));
 
         let pid = transport.get_pid().unwrap();
@@ -576,8 +570,12 @@ impl Network {
                 )
             }
         };
-        if self.graph[idx].links.contains(&self.graph[self.idx].pid) {
-            log::trace!("Update edge (link) {} {}", self.graph[self.idx].pid, pid);
+
+        let my_node = &self.graph[self.idx];
+        let remote_node = &self.graph[idx];
+
+        if remote_node.links.contains(&my_node.pid) {
+            log::trace!("Update edge (link) {} {}", my_node.pid, pid);
             self.update_edge(self.idx, idx);
         }
         self.graph[self.idx].links.insert(pid);
@@ -589,7 +587,7 @@ impl Network {
             self.send_on_links(vec![(self.idx, false)], |link| link.pid != pid);
         }
 
-        let idxs = self.graph.node_indices().map(|i| (i, true)).collect();
+        let idxs: Vec<_> = self.graph.node_indices().map(|i| (i, true)).collect();
         self.send_on_link(idxs, &transport);
         LinkId::new(free_index)
     }
