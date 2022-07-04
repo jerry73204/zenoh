@@ -1551,8 +1551,8 @@ pub fn route_query(
     // drop(tables);
     #[cfg(feature = "complete_n")]
     for ((outface, key_expr, context), t) in route.values() {
-        let mut outface = outface.clone();
-        let outface_mut = get_mut_unchecked(&mut outface);
+        let outface = outface.clone();
+        let outface_mut = get_mut_unchecked(&outface);
         outface_mut.next_qid += 1;
         let qid = outface_mut.next_qid;
         outface_mut.pending_queries.insert(qid, query.clone());
