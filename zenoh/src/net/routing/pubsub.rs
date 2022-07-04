@@ -1129,7 +1129,7 @@ fn send_to_first(
     let (outface, key_expr, context) = route.values().next().unwrap();
     if srcface.id != outface.id {
         outface.primitives.send_data(
-            &key_expr, payload,
+            key_expr, payload,
             channel, // @TODO: Need to check the active subscriptions to determine the right reliability value
             cong_ctrl, data_info, *context,
         )
