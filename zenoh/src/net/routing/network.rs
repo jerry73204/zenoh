@@ -13,7 +13,7 @@
 //
 use super::runtime::Runtime;
 use petgraph::graph::NodeIndex;
-use petgraph::visit::{VisitMap, Visitable};
+use petgraph::visit::{IntoNodeReferences, VisitMap, Visitable};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::fmt;
@@ -155,8 +155,8 @@ impl Network {
     #[inline]
     pub(crate) fn get_idx(&self, pid: &PeerId) -> Option<NodeIndex> {
         self.graph
-            .node_indices()
-            .find(|idx| self.graph[*idx].pid == *pid)
+            .node_references()
+            .find_map(|(idx, node)| (node.pid == *pid).then(|| idx))
     }
 
     #[inline]
