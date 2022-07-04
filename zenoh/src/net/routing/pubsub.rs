@@ -78,14 +78,19 @@ fn propagate_simple_subscription(
     let faces = &mut tables.faces;
     let restree = &mut tables.restree;
     for dst_face in faces.values_mut() {
-        if src_face.id != dst_face.id
-            && !dst_face.local_subs.contains(res)
-            && match tables.whatami {
-                WhatAmI::Router => dst_face.whatami == WhatAmI::Client,
-                WhatAmI::Peer => dst_face.whatami == WhatAmI::Client,
-                _ => (src_face.whatami == WhatAmI::Client || dst_face.whatami == WhatAmI::Client),
-            }
-        {
+        use WhatAmI as W;
+
+        let cond1 = src_face.id != dst_face.id;
+        let cond2 = !dst_face.local_subs.contains(res);
+        let cond3 = matches!(
+            (tables.whatami, src_face.whatami, dst_face.whatami),
+            (W::Router, _, W::Client)
+                | (W::Peer, _, W::Client)
+                | (W::Client, W::Client, _)
+                | (W::Client, _, W::Client)
+        );
+
+        if cond1 && cond2 && cond3 {
             get_mut_unchecked(dst_face).local_subs.insert(res.clone());
             let key_expr = Tables::decl_key(restree, res, dst_face);
             dst_face
