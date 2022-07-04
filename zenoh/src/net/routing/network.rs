@@ -255,9 +255,17 @@ impl Network {
         ZenohMessage::make_link_state_list(list, None)
     }
 
-    fn send_on_link(&self, idxs: Vec<(NodeIndex, bool)>, transport: &TransportUnicast) {
+    fn send_on_link<I>(&self, idxs: I, transport: &TransportUnicast)
+    where
+        I: IntoIterator<Item = (NodeIndex, bool)>,
+    {
         let msg = self.make_msg(idxs);
-        log::trace!("{} Send to {:?} {:?}", self.name, transport.get_pid(), msg);
+        log::trace!(
+            "{} Send to {} {:?}",
+            self.name,
+            transport.get_pid().unwrap(),
+            msg
+        );
         if let Err(e) = transport.handle_message(msg) {
             log::debug!("{} Error sending LinkStateList: {}", self.name, e);
         }
