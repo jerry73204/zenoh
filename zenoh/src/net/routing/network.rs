@@ -622,6 +622,7 @@ impl Network {
         {
             self.graph.remove_edge(edge);
         }
+
         let removed = self.remove_detached_nodes();
 
         self.graph[self.idx].sn += 1;
@@ -668,15 +669,16 @@ impl Network {
             }
         }
 
-        let mut removed = vec![];
+        #[allow(clippy::needless_collect)]
         let indices: Vec<NodeIndex> = self.graph.node_indices().collect();
-
-        for idx in indices {
-            if !visit_map.is_visited(&idx) {
+        let removed: Vec<_> = indices
+            .into_iter()
+            .filter(|idx| !visit_map.is_visited(idx))
+            .map(|idx| {
                 log::debug!("Remove node {}", &self.graph[idx].pid);
-                removed.push((idx, self.graph.remove_node(idx).unwrap()));
-            }
-        }
+                (idx, self.graph.remove_node(idx).unwrap())
+            })
+            .collect();
         removed
     }
 
