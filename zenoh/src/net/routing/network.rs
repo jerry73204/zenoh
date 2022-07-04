@@ -13,9 +13,9 @@
 //
 use super::runtime::Runtime;
 use petgraph::graph::NodeIndex;
-use petgraph::visit::{IntoNodeReferences, VisitMap, Visitable};
+use petgraph::visit::{VisitMap, Visitable};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hasher;
 use vec_map::VecMap;
@@ -111,6 +111,7 @@ pub(crate) struct Network {
     pub(crate) distances: Vec<f64>,
     pub(crate) graph: petgraph::stable_graph::StableUnGraph<Node, f64>,
     pub(crate) runtime: Runtime,
+    pub(crate) pid_to_lpsid: HashMap<PeerId, NodeIndex>,
 }
 
 impl Network {
@@ -130,6 +131,7 @@ impl Network {
             sn: 1,
             links: HashSet::new(),
         });
+
         Network {
             name,
             peers_autoconnect,
@@ -144,6 +146,7 @@ impl Network {
             distances: vec![0.0],
             graph,
             runtime,
+            pid_to_lpsid: HashMap::new(),
         }
     }
 
@@ -156,9 +159,7 @@ impl Network {
 
     #[inline]
     pub(crate) fn get_idx(&self, pid: PeerId) -> Option<NodeIndex> {
-        self.graph
-            .node_references()
-            .find_map(|(idx, node)| (node.pid == pid).then(|| idx))
+        self.pid_to_lpsid.get(&pid).cloned()
     }
 
     #[inline]
@@ -201,6 +202,8 @@ impl Network {
     fn add_node(&mut self, node: Node) -> NodeIndex {
         let pid = node.pid;
         let idx = self.graph.add_node(node);
+        self.pid_to_lpsid.insert(pid, idx);
+
         self.links
             .values_mut()
             .filter_map(|link| {
@@ -678,7 +681,9 @@ impl Network {
             .filter(|idx| !visit_map.is_visited(idx))
             .map(|idx| {
                 log::debug!("Remove node {}", &self.graph[idx].pid);
-                (idx, self.graph.remove_node(idx).unwrap())
+                let node = self.graph.remove_node(idx).unwrap();
+                self.pid_to_lpsid.remove(&node.pid);
+                (idx, node)
             })
             .collect();
         removed
