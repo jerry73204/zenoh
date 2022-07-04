@@ -212,7 +212,9 @@ impl Network {
     }
 
     fn make_link_state(&self, idx: NodeIndex, details: bool) -> LinkState {
-        let links = self.graph[idx]
+        let node = &self.graph[idx];
+
+        let links = node
             .links
             .iter()
             .filter_map(|pid| {
@@ -230,17 +232,13 @@ impl Network {
             .collect();
         LinkState {
             psid: idx.index() as ZInt,
-            sn: self.graph[idx].sn,
-            pid: if details {
-                Some(self.graph[idx].pid)
-            } else {
-                None
-            },
+            sn: node.sn,
+            pid: details.then(|| node.pid),
             whatami: self.graph[idx].whatami,
             locators: if idx == self.idx {
                 Some(self.get_locators())
             } else {
-                self.graph[idx].locators.clone()
+                node.locators.clone()
             },
             links,
         }
