@@ -244,11 +244,14 @@ impl Network {
         }
     }
 
-    fn make_msg(&self, idxs: Vec<(NodeIndex, bool)>) -> ZenohMessage {
-        let mut list = vec![];
-        for (idx, details) in idxs {
-            list.push(self.make_link_state(idx, details));
-        }
+    fn make_msg<I>(&self, idxs: I) -> ZenohMessage
+    where
+        I: IntoIterator<Item = (NodeIndex, bool)>,
+    {
+        let list: Vec<_> = idxs
+            .into_iter()
+            .map(|(idx, details)| self.make_link_state(idx, details))
+            .collect();
         ZenohMessage::make_link_state_list(list, None)
     }
 
