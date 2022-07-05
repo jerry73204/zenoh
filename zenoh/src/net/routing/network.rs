@@ -112,6 +112,7 @@ pub(crate) struct Network {
     pub(crate) graph: petgraph::stable_graph::StableUnGraph<Node, f64>,
     pub(crate) runtime: Runtime,
     pub(crate) pid_to_lpsid: HashMap<PeerId, NodeIndex>,
+    pub(crate) pid_to_linkid: HashMap<PeerId, LinkId>,
 }
 
 impl Network {
@@ -147,6 +148,7 @@ impl Network {
             graph,
             runtime,
             pid_to_lpsid: HashMap::new(),
+            pid_to_linkid: HashMap::new(),
         }
     }
 
@@ -177,7 +179,8 @@ impl Network {
 
     #[inline]
     pub(crate) fn get_link_from_pid(&self, pid: PeerId) -> Option<&Link> {
-        self.links.values().find(|link| link.pid == pid)
+        let linkid = *self.pid_to_linkid.get(&pid)?;
+        Some(&self.links[linkid.0])
     }
 
     #[inline]
@@ -585,7 +588,9 @@ impl Network {
 
     pub(crate) fn add_link(&mut self, transport: TransportUnicast) -> LinkId {
         let free_index = (0..).find(|&idx| !self.links.contains_key(idx)).unwrap();
-        self.links.insert(free_index, Link::new(transport.clone()));
+        let link = Link::new(transport.clone());
+        self.pid_to_linkid.insert(link.pid, LinkId::new(free_index));
+        self.links.insert(free_index, link);
 
         let pid = transport.get_pid().unwrap();
         let whatami = transport.get_whatami().unwrap();
@@ -629,8 +634,9 @@ impl Network {
 
     pub(crate) fn remove_link(&mut self, pid: PeerId) -> Vec<(NodeIndex, Node)> {
         log::trace!("{} remove_link {}", self.name, pid);
-        self.links.retain(|_, link| link.pid != pid);
-        self.graph[self.idx].links.retain(|link| *link != pid);
+        let linkid = self.pid_to_linkid[&pid];
+        self.links.remove(linkid.0).unwrap();
+        self.graph[self.idx].links.retain(|&link| link != pid);
 
         if let Some((edge, _)) = self
             .get_node_from_pid(pid)
