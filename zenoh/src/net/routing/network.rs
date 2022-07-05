@@ -184,6 +184,12 @@ impl Network {
     }
 
     #[inline]
+    pub(crate) fn get_link_from_pid_mut(&mut self, pid: PeerId) -> Option<&mut Link> {
+        let linkid = *self.pid_to_linkid.get(&pid)?;
+        Some(&mut self.links[linkid.0])
+    }
+
+    #[inline]
     pub(crate) fn get_local_context(&self, context: Option<ZInt>, link_id: LinkId) -> NodeIndex {
         let context = context.unwrap_or(0);
         match self.get_link(link_id) {
