@@ -18,6 +18,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hasher;
+use std::time::Duration;
 use vec_map::VecMap;
 use zenoh_link::Locator;
 use zenoh_protocol::core::{PeerId, WhatAmI, ZInt};
@@ -333,125 +334,134 @@ impl Network {
         link_states: Vec<LinkState>,
         src: PeerId,
     ) -> Vec<(NodeIndex, Node)> {
+        use WhatAmI as W;
+
+        #[derive(Debug)]
+        struct LinkState2 {
+            pid: PeerId,
+            whatami: WhatAmI,
+            locators: Option<Vec<Locator>>,
+            sn: ZInt,
+            links: Vec<PeerId>,
+        }
+
+        #[derive(Debug, Clone)]
+        struct LinkState3 {
+            is_new: bool,
+            idx: NodeIndex,
+            links: Vec<PeerId>,
+        }
+
         log::trace!("{} Received from {} raw: {:?}", self.name, src, link_states);
 
-        let graph = &self.graph;
-        let links = &mut self.links;
+        // Check if the link for the source peer exists.
+        // If not, return empty vec.
+        if !self.pid_to_linkid.contains_key(&src) {
+            log::error!(
+                "{} Received LinkStateList from unknown link {}",
+                self.name,
+                src
+            );
+            return vec![];
+        }
 
-        let src_link = match links.values_mut().find(|link| link.pid == src) {
-            Some(link) => link,
-            None => {
-                log::error!(
-                    "{} Received LinkStateList from unknown link {}",
-                    self.name,
-                    src
-                );
-                return vec![];
+        // register psid<->pid mappings
+        link_states.iter().for_each(|link_state| {
+            if let Some(pid) = link_state.pid {
+                let idx = self.pid_to_lpsid.get(&pid).cloned();
+                let src_link = self.get_link_from_pid_mut(src).unwrap();
+
+                src_link.set_rpsid_to_pid(link_state.psid, pid);
+                if let Some(idx) = idx {
+                    src_link.set_rpsid_to_lpsid(link_state.psid, idx);
+                }
             }
-        };
+        });
 
-        // register psid<->pid mappings & apply mapping to nodes
-        #[allow(clippy::needless_collect)] // need to release borrow on self
+        let src_link = self.get_link_from_pid(src).unwrap();
+
+        // Map rpsid (remote PSID) to pid (PeerId)
+        #[allow(clippy::needless_collect)]
         let link_states: Vec<_> = link_states
             .into_iter()
             .filter_map(|link_state| {
-                if let Some(pid) = link_state.pid {
-                    src_link.set_rpsid_to_pid(link_state.psid, pid);
-                    if let Some(idx) = graph.node_indices().find(|idx| graph[*idx].pid == pid) {
-                        src_link.set_rpsid_to_lpsid(link_state.psid, idx);
-                    }
-                    Some((
-                        pid,
-                        link_state.whatami.unwrap_or(WhatAmI::Router),
-                        link_state.locators,
-                        link_state.sn,
-                        link_state.links,
-                    ))
+                // Try to resolve pid of the peer for the link-state msg
+                let pid = if let Some(pid) = link_state.pid {
+                    pid
+                } else if let Some(pid) = src_link.get_pid_by_rpsid(link_state.psid) {
+                    pid
                 } else {
-                    match src_link.get_pid_by_rpsid(link_state.psid) {
-                        Some(pid) => Some((
-                            pid,
-                            link_state.whatami.unwrap_or(WhatAmI::Router),
-                            link_state.locators,
-                            link_state.sn,
-                            link_state.links,
-                        )),
-                        None => {
-                            log::error!(
-                                "Received LinkState from {} with unknown node mapping {}",
-                                src,
-                                link_state.psid
-                            );
-                            None
-                        }
-                    }
-                }
-            })
-            .collect();
+                    log::error!(
+                        "Received LinkState from {} with unknown node mapping {}",
+                        src,
+                        link_state.psid
+                    );
+                    return None;
+                };
 
-        // apply psid<->pid mapping to links
-        let src_link = self.get_link_from_pid(src).unwrap();
-        let link_states: Vec<_> = link_states
-            .into_iter()
-            .map(|(pid, wai, locs, sn, links)| {
-                let links: Vec<PeerId> = links
+                // Try to resolve pids of the links
+                let links: Vec<PeerId> = link_state
+                    .links
                     .iter()
                     .filter_map(|&l| {
-                        if let Some(pid) = src_link.get_pid_by_rpsid(l) {
-                            Some(pid)
-                        } else {
+                        let pid = src_link.get_pid_by_rpsid(l);
+                        if pid.is_none() {
                             log::error!(
                                 "{} Received LinkState from {} with unknown link mapping {}",
                                 self.name,
                                 src,
                                 l
                             );
-                            None
                         }
+                        pid
                     })
                     .collect();
-                (pid, wai, locs, sn, links)
+
+                Some(LinkState2 {
+                    pid,
+                    whatami: link_state.whatami.unwrap_or(W::Router),
+                    locators: link_state.locators,
+                    sn: link_state.sn,
+                    links,
+                })
+            })
+            .inspect(|link_state| {
+                log::trace!(
+                    "{} Received from {} mapped: {:?}",
+                    self.name,
+                    src,
+                    link_state
+                );
             })
             .collect();
 
-        // log::trace!(
-        //     "{} Received from {} mapped: {:?}",
-        //     self.name,
-        //     src,
-        //     link_states
-        // );
-        for link_state in &link_states {
-            log::trace!(
-                "{} Received from {} mapped: {:?}",
-                self.name,
-                src,
-                link_state
-            );
-        }
-
         // Add nodes to graph & filter out up to date states
-        let mut link_states: Vec<(Vec<PeerId>, NodeIndex, bool)> = link_states
+        let mut link_states: Vec<LinkState3> = link_states
             .into_iter()
-            .filter_map(|args| {
-                let (pid, whatami, locators, sn, links) = args;
+            .filter_map(|link_state| {
+                let LinkState2 {
+                    pid,
+                    whatami,
+                    locators,
+                    sn,
+                    links,
+                } = link_state;
 
-                match self.get_node_from_pid_mut(pid) {
+                // Update or insert a node
+                let (idx, is_new) = match self.get_node_from_pid_mut(pid) {
                     Some((idx, node)) => {
                         let oldsn = node.sn;
-                        if oldsn < sn {
-                            node.sn = sn;
-                            node.links = links.iter().cloned().collect();
-                            if locators.is_some() {
-                                node.locators = locators;
-                            }
-                            if oldsn == 0 {
-                                Some((links, idx, true))
-                            } else {
-                                Some((links, idx, false))
-                            }
-                        } else {
-                            None
+                        if oldsn >= sn {
+                            return None;
                         }
+                        let is_new = oldsn == 0;
+
+                        node.sn = sn;
+                        node.links = links.iter().cloned().collect();
+                        if locators.is_some() {
+                            node.locators = locators;
+                        }
+                        (idx, is_new)
                     }
                     None => {
                         let node = Node {
@@ -463,90 +473,122 @@ impl Network {
                         };
                         log::debug!("{} Add node (state) {}", self.name, pid);
                         let idx = self.add_node(node);
-                        Some((links, idx, true))
+                        (idx, true)
                     }
-                }
+                };
+
+                Some(LinkState3 { links, idx, is_new })
             })
             .collect();
 
         // Add/remove edges from graph
-        let mut reintroduced_nodes = vec![];
-        for (links, idx1, _) in &link_states {
-            for &link in links {
-                let node1 = &self.graph[*idx1];
+        let reintroduced_nodes: Vec<_> = link_states
+            .iter()
+            .flat_map(|link_state| {
+                let LinkState3 {
+                    ref links,
+                    idx: idx1,
+                    ..
+                } = *link_state;
 
-                if let Some((idx2, node2)) = self.get_node_from_pid(link) {
-                    if node2.links.contains(&node1.pid) {
+                let reintroduced_nodes: Vec<_> = links
+                    .iter()
+                    .filter_map(|&link| {
+                        let node1 = &self.graph[idx1];
+
+                        if let Some((idx2, node2)) = self.get_node_from_pid(link) {
+                            if node2.links.contains(&node1.pid) {
+                                log::trace!(
+                                    "{} Update edge (state) {} {}",
+                                    self.name,
+                                    node1.pid,
+                                    node2.pid
+                                );
+                                self.update_edge(idx1, idx2);
+                            }
+
+                            None
+                        } else {
+                            let node = Node {
+                                pid: link,
+                                whatami: None,
+                                locators: None,
+                                sn: 0,
+                                links: HashSet::new(),
+                            };
+                            log::debug!("{} Add node (reintroduced) {}", self.name, link);
+                            let idx = self.add_node(node);
+
+                            Some(LinkState3 {
+                                links: vec![],
+                                idx,
+                                is_new: true,
+                            })
+                        }
+                    })
+                    .collect();
+
+                let mut neighbors = self.graph.neighbors_undirected(idx1).detach();
+                while let Some((eidx, idx2)) = neighbors.next(&self.graph) {
+                    let node2 = &self.graph[idx2];
+
+                    if !links.contains(&node2.pid) {
                         log::trace!(
-                            "{} Update edge (state) {} {}",
+                            "{} Remove edge (state) {} {}",
                             self.name,
-                            node1.pid,
+                            self.graph[idx1].pid,
                             node2.pid
                         );
-                        self.update_edge(*idx1, idx2);
+                        self.graph.remove_edge(eidx);
                     }
-                } else {
-                    let node = Node {
-                        pid: link,
-                        whatami: None,
-                        locators: None,
-                        sn: 0,
-                        links: HashSet::new(),
-                    };
-                    log::debug!("{} Add node (reintroduced) {}", self.name, link.clone());
-                    let idx = self.add_node(node);
-                    reintroduced_nodes.push((vec![], idx, true));
                 }
-            }
-            let mut edges = vec![];
-            let mut neighbors = self.graph.neighbors_undirected(*idx1).detach();
-            while let Some(edge) = neighbors.next(&self.graph) {
-                edges.push(edge);
-            }
-            for (eidx, idx2) in edges {
-                if !links.contains(&self.graph[idx2].pid) {
-                    log::trace!(
-                        "{} Remove edge (state) {} {}",
-                        self.name,
-                        self.graph[*idx1].pid,
-                        self.graph[idx2].pid
-                    );
-                    self.graph.remove_edge(eidx);
-                }
-            }
-        }
+
+                reintroduced_nodes
+            })
+            .collect();
+
         link_states.extend(reintroduced_nodes);
 
         let removed = self.remove_detached_nodes();
-        let link_states: Vec<(Vec<PeerId>, NodeIndex, bool)> = link_states
+        let link_states: Vec<LinkState3> = link_states
             .into_iter()
-            .filter(|ls| !removed.iter().any(|(idx, _)| idx == &ls.1))
+            .filter(|ls| !removed.iter().any(|&(idx, _)| idx == ls.idx))
             .collect();
 
-        if (self.peers_autoconnect && self.runtime.whatami == WhatAmI::Peer)
-            || (self.routers_autoconnect_gossip && self.runtime.whatami == WhatAmI::Router)
         {
-            // Connect discovered peers
-            for (_, idx, _) in &link_states {
-                let node = &self.graph[*idx];
-                if (self.runtime.whatami == WhatAmI::Peer
-                    && (node.whatami == Some(WhatAmI::Peer)
-                        || node.whatami == Some(WhatAmI::Router)))
-                    || (self.runtime.whatami == WhatAmI::Router
-                        && node.whatami == Some(WhatAmI::Router))
-                {
-                    if let Some(locators) = &node.locators {
-                        let runtime = self.runtime.clone();
-                        let pid = node.pid;
-                        let locators = locators.clone();
-                        self.runtime.spawn(async move {
-                            // random backoff
-                            async_std::task::sleep(std::time::Duration::from_millis(
-                                rand::random::<u64>() % 100,
-                            ))
-                            .await;
-                            runtime.connect_peer(&pid, &locators).await;
-                        });
+            let autoconnect_enabled = matches!(
+                (
+                    self.runtime.whatami,
+                    self.peers_autoconnect,
+                    self.routers_autoconnect_gossip
+                ),
+                (W::Peer, true, _) | (W::Router, _, true)
+            );
+
+            if autoconnect_enabled {
+                // Connect discovered peers
+                for link_state in &link_states {
+                    let LinkState3 { idx, .. } = *link_state;
+                    let node = &self.graph[idx];
+
+                    let is_valid = matches!(
+                        (self.runtime.whatami, node.whatami),
+                        (W::Peer, Some(W::Peer | W::Router)) | (W::Router, Some(W::Router))
+                    );
+
+                    if is_valid {
+                        if let Some(locators) = &node.locators {
+                            let runtime = self.runtime.clone();
+                            let pid = node.pid;
+                            let locators = locators.clone();
+                            self.runtime.spawn(async move {
+                                // random backoff
+                                let millis = rand::random::<u64>() % 100;
+                                let dur = Duration::from_millis(millis);
+                                async_std::task::sleep(dur).await;
+                                runtime.connect_peer(&pid, &locators).await;
+                            });
+                        }
                     }
                 }
             }
@@ -555,38 +597,30 @@ impl Network {
         // Propagate link states
         // Note: we need to send all states at once for each face
         // to avoid premature node deletion on the other side
-        #[allow(clippy::type_complexity)]
-        if !link_states.is_empty() {
-            let (new_idxs, updated_idxs): (
-                Vec<(Vec<PeerId>, NodeIndex, bool)>,
-                Vec<(Vec<PeerId>, NodeIndex, bool)>,
-            ) = link_states.into_iter().partition(|(_, _, new)| *new);
-            let new_idxs: Vec<(NodeIndex, bool)> = new_idxs
-                .into_iter()
-                .map(|(_, idx1, _new_node)| (idx1, true))
-                .collect();
-            for link in self.links.values() {
-                if link.pid != src {
-                    let updated_idxs: Vec<(NodeIndex, bool)> = updated_idxs
-                        .clone()
-                        .into_iter()
-                        .filter_map(|(_, idx1, _)| {
-                            if link.pid != self.graph[idx1].pid {
-                                Some((idx1, false))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    if !new_idxs.is_empty() || !updated_idxs.is_empty() {
-                        self.send_on_link(
-                            [&new_idxs[..], &updated_idxs[..]].concat(),
-                            &link.transport,
-                        );
-                    }
-                } else if !new_idxs.is_empty() {
-                    self.send_on_link(new_idxs.clone(), &link.transport);
+        let (new_idxs, updated_idxs): (Vec<_>, Vec<_>) = link_states
+            .into_iter()
+            .partition(|link_state| link_state.is_new);
+
+        for link in self.links.values() {
+            if link.pid != src {
+                let updated_idxs = updated_idxs
+                    .iter()
+                    .filter(|link_state| link.pid != self.graph[link_state.idx].pid);
+                let idxs_to_send: Vec<_> = new_idxs.iter().chain(updated_idxs).collect();
+
+                if !idxs_to_send.is_empty() {
+                    let idxs_to_send = idxs_to_send.iter().cloned().map(|link_state| {
+                        let LinkState3 { is_new, idx, .. } = *link_state;
+                        (idx, is_new)
+                    });
+                    self.send_on_link(idxs_to_send, &link.transport);
                 }
+            } else if !new_idxs.is_empty() {
+                let idxs_to_send = new_idxs.iter().map(|link_state| {
+                    let LinkState3 { is_new, idx, .. } = *link_state;
+                    (idx, is_new)
+                });
+                self.send_on_link(idxs_to_send, &link.transport);
             }
         }
         removed
