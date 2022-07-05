@@ -157,9 +157,17 @@ impl Network {
         )
     }
 
+    pub(crate) fn get_node_from_pid(&self, pid: PeerId) -> Option<(NodeIndex, &Node)> {
+        let idx = *self.pid_to_lpsid.get(&pid)?;
+        let node = &self.graph[idx];
+        Some((idx, node))
+    }
+
     #[inline]
-    pub(crate) fn get_idx(&self, pid: PeerId) -> Option<NodeIndex> {
-        self.pid_to_lpsid.get(&pid).cloned()
+    pub(crate) fn get_node_from_pid_mut(&mut self, pid: PeerId) -> Option<(NodeIndex, &mut Node)> {
+        let idx = *self.pid_to_lpsid.get(&pid)?;
+        let node = &mut self.graph[idx];
+        Some((idx, node))
     }
 
     #[inline]
@@ -223,7 +231,7 @@ impl Network {
             .links
             .iter()
             .filter_map(|&pid| {
-                if let Some(idx2) = self.get_idx(pid) {
+                if let Some((idx2, _)) = self.get_node_from_pid(pid) {
                     Some(idx2.index() as ZInt)
                 } else {
                     log::error!(
@@ -415,10 +423,11 @@ impl Network {
         // Add nodes to graph & filter out up to date states
         let mut link_states: Vec<(Vec<PeerId>, NodeIndex, bool)> = link_states
             .into_iter()
-            .filter_map(
-                |(pid, whatami, locators, sn, links)| match self.get_idx(pid) {
-                    Some(idx) => {
-                        let node = &mut self.graph[idx];
+            .filter_map(|args| {
+                let (pid, whatami, locators, sn, links) = args;
+
+                match self.get_node_from_pid_mut(pid) {
+                    Some((idx, node)) => {
                         let oldsn = node.sn;
                         if oldsn < sn {
                             node.sn = sn;
@@ -447,21 +456,23 @@ impl Network {
                         let idx = self.add_node(node);
                         Some((links, idx, true))
                     }
-                },
-            )
+                }
+            })
             .collect();
 
         // Add/remove edges from graph
         let mut reintroduced_nodes = vec![];
         for (links, idx1, _) in &link_states {
             for &link in links {
-                if let Some(idx2) = self.get_idx(link) {
-                    if self.graph[idx2].links.contains(&self.graph[*idx1].pid) {
+                let node1 = &self.graph[*idx1];
+
+                if let Some((idx2, node2)) = self.get_node_from_pid(link) {
+                    if node2.links.contains(&node1.pid) {
                         log::trace!(
                             "{} Update edge (state) {} {}",
                             self.name,
-                            self.graph[*idx1].pid,
-                            self.graph[idx2].pid
+                            node1.pid,
+                            node2.pid
                         );
                         self.update_edge(*idx1, idx2);
                     }
@@ -578,8 +589,8 @@ impl Network {
 
         let pid = transport.get_pid().unwrap();
         let whatami = transport.get_whatami().unwrap();
-        let (idx, new) = match self.get_idx(pid) {
-            Some(idx) => (idx, false),
+        let (idx, new) = match self.get_node_from_pid(pid) {
+            Some((idx, _)) => (idx, false),
             None => {
                 log::debug!("{} Add node (link) {}", self.name, pid);
                 (
@@ -622,8 +633,8 @@ impl Network {
         self.graph[self.idx].links.retain(|link| *link != pid);
 
         if let Some((edge, _)) = self
-            .get_idx(pid)
-            .and_then(|idx| self.graph.find_edge_undirected(self.idx, idx))
+            .get_node_from_pid(pid)
+            .and_then(|(idx, _)| self.graph.find_edge_undirected(self.idx, idx))
         {
             self.graph.remove_edge(edge);
         }
@@ -635,7 +646,10 @@ impl Network {
         let links: Vec<ZInt> = self
             .links
             .values()
-            .map(|link| self.get_idx(link.pid).unwrap().index() as ZInt)
+            .map(|link| {
+                let (idx, _) = self.get_node_from_pid(link.pid).unwrap();
+                idx.index() as ZInt
+            })
             .collect();
 
         let msg = ZenohMessage::make_link_state_list(
@@ -665,7 +679,7 @@ impl Network {
         while let Some(node) = dfs_stack.pop() {
             if visit_map.visit(node) {
                 for &succpid in &self.graph[node].links {
-                    if let Some(succ) = self.get_idx(succpid) {
+                    if let Some((succ, _)) = self.get_node_from_pid(succpid) {
                         if !visit_map.is_visited(&succ) {
                             dfs_stack.push(succ);
                         }

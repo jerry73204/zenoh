@@ -111,8 +111,8 @@ fn propagate_sourced_subscription(
     let restree = &mut tables.restree;
     let net = net!(tables, net_type).unwrap();
 
-    match net.get_idx(*source) {
-        Some(tree_sid) => {
+    match net.get_node_from_pid(*source) {
+        Some((tree_sid, _)) => {
             if let Some(tree) = net.trees.get(tree_sid.index()) {
                 send_sourced_subscription_to_net_childs(
                     restree,
@@ -424,8 +424,8 @@ fn propagate_forget_sourced_subscription(
 ) {
     let net = net!(tables, net_type).unwrap();
     let restree = &mut tables.restree;
-    match net.get_idx(*source) {
-        Some(tree_sid) => {
+    match net.get_node_from_pid(*source) {
+        Some((tree_sid, _)) => {
             if let Some(tree) = net.trees.get(tree_sid.index()) {
                 send_forget_sourced_subscription_to_net_childs(
                     restree,
@@ -781,7 +781,7 @@ fn insert_faces_for_subs(
 
     (|| {
         for sub in subs {
-            let sub_idx = net.get_idx(*sub)?;
+            let (sub_idx, _) = net.get_node_from_pid(*sub)?;
             let direction = (*(tree.directions.get(sub_idx.index())?))?;
             let node = net.graph.node_weight(direction)?;
             let face = tables.get_face(&node.pid)?;
