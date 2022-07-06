@@ -290,57 +290,60 @@ impl Tables {
     }
 
     pub fn register_expr(&mut self, face: &Arc<FaceState>, expr_id: ZInt, expr: &KeyExpr) {
-        match self.get_mapping(face, &expr.scope).cloned() {
-            Some(prefix) => match face.remote_mappings.get(&expr_id) {
-                Some(res) => {
-                    if self.restree.expr(res)
-                        != format!("{}{}", self.restree.expr(&prefix), expr.suffix)
-                    {
-                        log::error!("Resource {} remapped. Remapping unsupported!", expr_id);
-                    }
-                }
-                None => {
-                    let res = self.restree.get_or_insert(&prefix, expr.suffix.as_ref());
-                    self.match_resource(&res);
+        // Get the prefix for the face
+        let prefix = match self.get_mapping(face, &expr.scope).cloned() {
+            Some(prefix) => prefix,
+            None => {
+                log::error!("Declare resource with unknown scope {}!", expr.scope);
+                return;
+            }
+        };
 
-                    let session_ctxs = &mut self.restree.weight_mut(&res).session_ctxs;
-                    if !session_ctxs.contains_key(&face.id) {
-                        session_ctxs.insert(
-                            face.id,
-                            Arc::new(SessionContext {
-                                face: face.clone(),
-                                local_expr_id: None,
-                                remote_expr_id: Some(expr_id),
-                                subs: None,
-                                qabl: HashMap::new(),
-                                last_values: HashMap::new(),
-                            }),
-                        );
-                    }
-                    let ctx = session_ctxs.get(&face.id).unwrap();
-
-                    if face.local_mappings.get(&expr_id).is_some() && ctx.local_expr_id == None {
-                        let local_expr_id = get_mut_unchecked(face).get_next_local_id();
-                        get_mut_unchecked(ctx).local_expr_id = Some(local_expr_id);
-
-                        get_mut_unchecked(face)
-                            .local_mappings
-                            .insert(local_expr_id, res.clone());
-
-                        face.primitives.decl_resource(
-                            local_expr_id,
-                            &self.restree.expr(&res).into_owned().into(),
-                        );
-                    }
-
-                    get_mut_unchecked(face)
-                        .remote_mappings
-                        .insert(expr_id, res.clone());
-                    self.compute_matches_routes(&res);
-                }
-            },
-            None => log::error!("Declare resource with unknown scope {}!", expr.scope),
+        // Return if the mapping already exists
+        if let Some(res) = face.remote_mappings.get(&expr_id) {
+            let expect_expr = format!("{}{}", self.restree.expr(&prefix), expr.suffix);
+            if self.restree.expr(res) != expect_expr {
+                log::error!("Resource {} remapped. Remapping unsupported!", expr_id);
+            }
+            return;
         }
+
+        let res = self.restree.get_or_insert(&prefix, expr.suffix.as_ref());
+        self.match_resource(&res);
+
+        let session_ctxs = &mut self.restree.weight_mut(&res).session_ctxs;
+
+        if !session_ctxs.contains_key(&face.id) {
+            session_ctxs.insert(
+                face.id,
+                Arc::new(SessionContext {
+                    face: face.clone(),
+                    local_expr_id: None,
+                    remote_expr_id: Some(expr_id),
+                    subs: None,
+                    qabl: HashMap::new(),
+                    last_values: HashMap::new(),
+                }),
+            );
+        }
+        let ctx = session_ctxs.get(&face.id).unwrap();
+
+        if face.local_mappings.get(&expr_id).is_some() && ctx.local_expr_id.is_none() {
+            let local_expr_id = get_mut_unchecked(face).get_next_local_id();
+            get_mut_unchecked(ctx).local_expr_id = Some(local_expr_id);
+
+            get_mut_unchecked(face)
+                .local_mappings
+                .insert(local_expr_id, res.clone());
+
+            face.primitives
+                .decl_resource(local_expr_id, &self.restree.expr(&res).into_owned().into());
+        }
+
+        get_mut_unchecked(face)
+            .remote_mappings
+            .insert(expr_id, res.clone());
+        self.compute_matches_routes(&res);
     }
 
     pub fn unregister_expr(&mut self, face: &Arc<FaceState>, expr_id: ZInt) {
