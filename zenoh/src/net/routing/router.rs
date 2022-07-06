@@ -807,53 +807,54 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
     fn del_link(&self, _link: Link) {}
 
     fn closing(&self) {
+        use WhatAmI as W;
+
         self.demux.closing();
-        let tables_ref = self.tables.clone();
-        match (self.transport.get_pid(), self.transport.get_whatami()) {
-            (Ok(pid), Ok(whatami)) => {
-                let mut tables = zwrite!(tables_ref);
-                match (tables.whatami, whatami) {
-                    (WhatAmI::Router, WhatAmI::Router) => {
-                        for (_, removed_node) in
-                            tables.routers_net.as_mut().unwrap().remove_link(&pid)
-                        {
-                            pubsub_remove_node(&mut tables, &removed_node.pid, WhatAmI::Router);
-                            queries_remove_node(&mut tables, &removed_node.pid, WhatAmI::Router);
-                        }
 
-                        tables.shared_nodes = tables
-                            .routers_net
-                            .as_ref()
-                            .unwrap()
-                            .shared_nodes(tables.peers_net.as_ref().unwrap());
-
-                        tables.schedule_compute_trees(tables_ref.clone(), WhatAmI::Router);
-                    }
-                    (WhatAmI::Router, WhatAmI::Peer)
-                    | (WhatAmI::Peer, WhatAmI::Router)
-                    | (WhatAmI::Peer, WhatAmI::Peer) => {
-                        for (_, removed_node) in
-                            tables.peers_net.as_mut().unwrap().remove_link(&pid)
-                        {
-                            pubsub_remove_node(&mut tables, &removed_node.pid, WhatAmI::Peer);
-                            queries_remove_node(&mut tables, &removed_node.pid, WhatAmI::Peer);
-                        }
-
-                        if tables.whatami == WhatAmI::Router {
-                            tables.shared_nodes = tables
-                                .routers_net
-                                .as_ref()
-                                .unwrap()
-                                .shared_nodes(tables.peers_net.as_ref().unwrap());
-                        }
-
-                        tables.schedule_compute_trees(tables_ref.clone(), WhatAmI::Peer);
-                    }
-                    _ => (),
-                };
+        let (pid, whatami) = match (self.transport.get_pid(), self.transport.get_whatami()) {
+            (Ok(pid), Ok(whatami)) => (pid, whatami),
+            _ => {
+                log::error!("Closed transport in session closing!");
+                return;
             }
-            (_, _) => log::error!("Closed transport in session closing!"),
-        }
+        };
+
+        let tables_ref = &self.tables;
+        let mut tables = zwrite!(tables_ref);
+
+        match (tables.whatami, whatami) {
+            (W::Router, W::Router) => {
+                for (_, removed_node) in tables.routers_net.as_mut().unwrap().remove_link(&pid) {
+                    pubsub_remove_node(&mut tables, &removed_node.pid, W::Router);
+                    queries_remove_node(&mut tables, &removed_node.pid, W::Router);
+                }
+
+                tables.shared_nodes = tables
+                    .routers_net
+                    .as_ref()
+                    .unwrap()
+                    .shared_nodes(tables.peers_net.as_ref().unwrap());
+
+                tables.schedule_compute_trees(tables_ref.clone(), W::Router);
+            }
+            (W::Router, W::Peer) | (W::Peer, W::Router | W::Peer) => {
+                for (_, removed_node) in tables.peers_net.as_mut().unwrap().remove_link(&pid) {
+                    pubsub_remove_node(&mut tables, &removed_node.pid, W::Peer);
+                    queries_remove_node(&mut tables, &removed_node.pid, W::Peer);
+                }
+
+                if tables.whatami == W::Router {
+                    tables.shared_nodes = tables
+                        .routers_net
+                        .as_ref()
+                        .unwrap()
+                        .shared_nodes(tables.peers_net.as_ref().unwrap());
+                }
+
+                tables.schedule_compute_trees(tables_ref.clone(), W::Peer);
+            }
+            _ => (),
+        };
     }
 
     fn closed(&self) {}
