@@ -933,13 +933,13 @@ pub(crate) fn compute_data_routes(tables: &mut Tables, res: &ResourceTreeIndex) 
             .graph
             .node_indices()
             .collect();
-        let max_idx = indexes.iter().max().unwrap();
+        let num_routes = indexes.iter().max().unwrap().index() + 1;
         tables.restree.weight_mut(res).routers_data_routes.clear();
         tables
             .restree
             .weight_mut(res)
             .routers_data_routes
-            .resize_with(max_idx.index() + 1, || Arc::new(HashMap::new()));
+            .resize_with(num_routes, || Arc::new(HashMap::new()));
 
         for &idx in &indexes {
             let route = compute_data_route(tables, res, "", Some(idx), WhatAmI::Peer);
@@ -954,13 +954,13 @@ pub(crate) fn compute_data_routes(tables: &mut Tables, res: &ResourceTreeIndex) 
             .graph
             .node_indices()
             .collect();
-        let max_idx = indexes.iter().max().unwrap();
+        let num_routes = indexes.iter().max().unwrap().index() + 1;
         tables.restree.weight_mut(res).peers_data_routes.clear();
         tables
             .restree
             .weight_mut(res)
             .peers_data_routes
-            .resize_with(max_idx.index() + 1, || Arc::new(HashMap::new()));
+            .resize_with(num_routes, || Arc::new(HashMap::new()));
 
         for &idx in &indexes {
             let route = compute_data_route(tables, res, "", Some(idx), WhatAmI::Peer);
