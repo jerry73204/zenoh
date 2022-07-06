@@ -486,25 +486,23 @@ impl Tables {
     }
 
     #[inline]
-    pub(super) fn elect_router<'a>(key_expr: &str, routers: &'a [PeerId]) -> &'a PeerId {
-        if routers.len() == 1 {
-            &routers[0]
-        } else {
-            routers
-                .iter()
-                .map(|router| {
-                    let mut hasher = DefaultHasher::new();
-                    for b in key_expr.as_bytes() {
-                        hasher.write_u8(*b);
-                    }
-                    for b in router.as_slice() {
-                        hasher.write_u8(*b);
-                    }
-                    (router, hasher.finish())
-                })
-                .max_by(|(_, s1), (_, s2)| s1.partial_cmp(s2).unwrap())
-                .unwrap()
-                .0
+    pub(super) fn elect_router(key_expr: &str, routers: &[PeerId]) -> PeerId {
+        match routers {
+            &[pid] => pid,
+            _ => {
+                let (&router, _) = routers
+                    .iter()
+                    .map(|router| {
+                        let mut hasher = DefaultHasher::new();
+                        hasher.write(key_expr.as_bytes());
+                        hasher.write(router.as_slice());
+                        let hash = hasher.finish();
+                        (router, hash)
+                    })
+                    .max_by(|(_, h1), (_, h2)| h1.cmp(h2))
+                    .unwrap_or_else(|| panic!("routers must not be empty"));
+                router
+            }
         }
     }
 

@@ -820,7 +820,7 @@ fn compute_data_route(
     };
 
     let master = tables.whatami != WhatAmI::Router
-        || *Tables::elect_router(&key_expr, &tables.shared_nodes) == tables.pid;
+        || Tables::elect_router(&key_expr, &tables.shared_nodes) == tables.pid;
 
     while let Some(mres) = matches.walk_next(tables.restree.container()) {
         if tables.whatami == WhatAmI::Router {

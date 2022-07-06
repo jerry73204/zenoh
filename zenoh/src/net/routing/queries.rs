@@ -1117,7 +1117,7 @@ fn compute_query_route(
     };
 
     let master = tables.whatami != WhatAmI::Router
-        || *Tables::elect_router(&key_expr, &tables.shared_nodes) == tables.pid;
+        || Tables::elect_router(&key_expr, &tables.shared_nodes) == tables.pid;
 
     while let Some(mres) = matches.walk_next(tables.restree.container()) {
         let complete = key_expr::include(tables.restree.expr(&mres).as_ref(), &key_expr);
