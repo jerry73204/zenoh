@@ -729,67 +729,77 @@ impl LinkStateInterceptor {
 
 impl TransportPeerEventHandler for LinkStateInterceptor {
     fn handle_message(&self, msg: ZenohMessage) -> ZResult<()> {
+        use WhatAmI as W;
+
         log::trace!("Recv {:?}", msg);
-        match msg.body {
-            ZenohBody::LinkStateList(list) => {
-                if let Ok(pid) = self.transport.get_pid() {
-                    let mut tables = zwrite!(self.tables);
-                    let whatami = self.transport.get_whatami()?;
-                    match (tables.whatami, whatami) {
-                        (WhatAmI::Router, WhatAmI::Router) => {
-                            for (_, removed_node) in tables
-                                .routers_net
-                                .as_mut()
-                                .unwrap()
-                                .link_states(list.link_states, pid)
-                            {
-                                pubsub_remove_node(&mut tables, &removed_node.pid, WhatAmI::Router);
-                                queries_remove_node(
-                                    &mut tables,
-                                    &removed_node.pid,
-                                    WhatAmI::Router,
-                                );
-                            }
 
-                            tables.shared_nodes = tables
-                                .routers_net
-                                .as_ref()
-                                .unwrap()
-                                .shared_nodes(tables.peers_net.as_ref().unwrap());
+        // Intercept the link-state messages
+        let list = match msg.body {
+            ZenohBody::LinkStateList(list) => list,
+            _ => {
+                return self.demux.handle_message(msg);
+            }
+        };
 
-                            tables.schedule_compute_trees(self.tables.clone(), WhatAmI::Router);
-                        }
-                        (WhatAmI::Router, WhatAmI::Peer)
-                        | (WhatAmI::Peer, WhatAmI::Router)
-                        | (WhatAmI::Peer, WhatAmI::Peer) => {
-                            for (_, removed_node) in tables
-                                .peers_net
-                                .as_mut()
-                                .unwrap()
-                                .link_states(list.link_states, pid)
-                            {
-                                pubsub_remove_node(&mut tables, &removed_node.pid, WhatAmI::Peer);
-                                queries_remove_node(&mut tables, &removed_node.pid, WhatAmI::Peer);
-                            }
+        // Obtain the PeerID of the underlying transport
+        let pid = if let Ok(pid) = self.transport.get_pid() {
+            pid
+        } else {
+            return Ok(());
+        };
 
-                            if tables.whatami == WhatAmI::Router {
-                                tables.shared_nodes = tables
-                                    .routers_net
-                                    .as_ref()
-                                    .unwrap()
-                                    .shared_nodes(tables.peers_net.as_ref().unwrap());
-                            }
+        // Lock the routing table
+        let mut tables = zwrite!(self.tables);
+        let whatami = self.transport.get_whatami()?;
 
-                            tables.schedule_compute_trees(self.tables.clone(), WhatAmI::Peer);
-                        }
-                        _ => (),
-                    };
+        // Update the table according to the received link-state
+        match (tables.whatami, whatami) {
+            (W::Router, W::Router) => {
+                let link_states = tables
+                    .routers_net
+                    .as_mut()
+                    .unwrap()
+                    .link_states(list.link_states, pid);
+
+                for (_, removed_node) in link_states {
+                    pubsub_remove_node(&mut tables, &removed_node.pid, W::Router);
+                    queries_remove_node(&mut tables, &removed_node.pid, W::Router);
                 }
 
-                Ok(())
+                tables.shared_nodes = tables
+                    .routers_net
+                    .as_ref()
+                    .unwrap()
+                    .shared_nodes(tables.peers_net.as_ref().unwrap());
+
+                tables.schedule_compute_trees(self.tables.clone(), W::Router);
             }
-            _ => self.demux.handle_message(msg),
-        }
+            (W::Router, W::Peer) | (W::Peer, W::Router | W::Peer) => {
+                let link_states = tables
+                    .peers_net
+                    .as_mut()
+                    .unwrap()
+                    .link_states(list.link_states, pid);
+
+                for (_, removed_node) in link_states {
+                    pubsub_remove_node(&mut tables, &removed_node.pid, W::Peer);
+                    queries_remove_node(&mut tables, &removed_node.pid, W::Peer);
+                }
+
+                if tables.whatami == W::Router {
+                    tables.shared_nodes = tables
+                        .routers_net
+                        .as_ref()
+                        .unwrap()
+                        .shared_nodes(tables.peers_net.as_ref().unwrap());
+                }
+
+                tables.schedule_compute_trees(self.tables.clone(), W::Peer);
+            }
+            _ => (),
+        };
+
+        Ok(())
     }
 
     fn new_link(&self, _link: Link) {}
