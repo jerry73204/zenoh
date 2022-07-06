@@ -1331,60 +1331,64 @@ pub fn pull_data(
     _pull_id: ZInt,
     _max_samples: &Option<ZInt>,
 ) {
-    match &tables.get_mapping(face, &expr.scope).cloned() {
-        Some(prefix) => match tables.restree.get(prefix, expr.suffix.as_ref()) {
-            Some(res) => {
-                match tables.restree.weight(&res).session_ctxs.get(&face.id) {
-                    Some(ctx) => match &ctx.subs {
-                        Some(subinfo) => {
-                            let lock = zlock!(tables.pull_caches_lock);
-                            for (name, (info, data)) in &ctx.last_values {
-                                let key_expr = Tables::get_best_key(
-                                    &tables.restree,
-                                    tables.restree.root(),
-                                    name,
-                                    face.id,
-                                );
-                                face.primitives.send_data(
-                                    &key_expr,
-                                    data.clone(),
-                                    Channel {
-                                        priority: Priority::default(), // @TODO: Default value for the time being
-                                        reliability: subinfo.reliability,
-                                    },
-                                    CongestionControl::default(), // @TODO: Default value for the time being
-                                    info.clone(),
-                                    None,
-                                );
-                            }
-                            get_mut_unchecked(ctx).last_values.clear();
-                            drop(lock);
-                        }
-                        None => {
-                            log::error!(
-                                "Pull data for unknown subscription {} (no info)!",
-                                [tables.restree.expr(prefix).as_ref(), expr.suffix.as_ref()]
-                                    .concat()
-                            );
-                        }
-                    },
-                    None => {
-                        log::error!(
-                            "Pull data for unknown subscription {} (no context)!",
-                            [tables.restree.expr(prefix).as_ref(), expr.suffix.as_ref()].concat()
-                        );
-                    }
-                }
-            }
-            None => {
-                log::error!(
-                    "Pull data for unknown subscription {} (no resource)!",
-                    [tables.restree.expr(prefix).as_ref(), expr.suffix.as_ref()].concat()
-                );
-            }
-        },
+    let prefix = match tables.get_mapping(face, &expr.scope) {
+        Some(prefix) => prefix,
         None => {
             log::error!("Pull data with unknown scope {}!", expr.scope);
+            return;
         }
     };
+
+    let res = match tables.restree.get(prefix, expr.suffix.as_ref()) {
+        Some(res) => res,
+        None => {
+            log::error!(
+                "Pull data for unknown subscription {} (no resource)!",
+                [tables.restree.expr(prefix).as_ref(), expr.suffix.as_ref()].concat()
+            );
+            return;
+        }
+    };
+
+    let ctx = match tables.restree.weight(&res).session_ctxs.get(&face.id) {
+        Some(ctx) => ctx,
+        None => {
+            log::error!(
+                "Pull data for unknown subscription {} (no context)!",
+                [tables.restree.expr(prefix).as_ref(), expr.suffix.as_ref()].concat()
+            );
+            return;
+        }
+    };
+
+    let subinfo = match &ctx.subs {
+        Some(subinfo) => subinfo,
+        None => {
+            log::error!(
+                "Pull data for unknown subscription {} (no info)!",
+                [tables.restree.expr(prefix).as_ref(), expr.suffix.as_ref()].concat()
+            );
+            return;
+        }
+    };
+
+    // Hold the lock in the folloing code.
+    // Do not write "let _ = ..." because it drops the lock guard immediately.
+    let _lock = zlock!(tables.pull_caches_lock);
+
+    for (name, (info, data)) in &ctx.last_values {
+        let key_expr = Tables::get_best_key(&tables.restree, tables.restree.root(), name, face.id);
+        face.primitives.send_data(
+            &key_expr,
+            data.clone(),
+            Channel {
+                priority: Priority::default(), // @TODO: Default value for the time being
+                reliability: subinfo.reliability,
+            },
+            CongestionControl::default(), // @TODO: Default value for the time being
+            info.clone(),
+            None,
+        );
+    }
+    get_mut_unchecked(ctx).last_values.clear();
 }
