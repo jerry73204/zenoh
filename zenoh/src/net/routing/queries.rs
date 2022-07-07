@@ -151,56 +151,33 @@ fn local_qabl_info(
     kind: ZInt,
     face: &Arc<FaceState>,
 ) -> QueryableInfo {
-    let mut info = if whatami == WhatAmI::Router {
-        restree
-            .weight(res)
-            .router_qabls
-            .iter()
-            .fold(None, |accu, (&(pid, k), info)| {
-                if pid != local_pid && k == kind {
-                    Some(match accu {
-                        Some(accu) => merge_qabl_infos(accu, info),
-                        None => info.clone(),
-                    })
-                } else {
-                    accu
-                }
-            })
-    } else {
-        None
-    };
-    info = restree
-        .weight(res)
+    let node = restree.weight(res);
+
+    let router_infos = (whatami == WhatAmI::Router)
+        .then(|| {
+            node.router_qabls
+                .iter()
+                .filter(|(&(pid, k), _)| pid != local_pid && k == kind)
+                .map(|(_, info)| info)
+        })
+        .into_iter()
+        .flatten();
+    let peer_infos = node
         .peer_qabls
         .iter()
-        .fold(info, |accu, ((pid, k), info)| {
-            if *pid != local_pid && *k == kind {
-                Some(match accu {
-                    Some(accu) => merge_qabl_infos(accu, info),
-                    None => info.clone(),
-                })
-            } else {
-                accu
-            }
-        });
-    restree
-        .weight(res)
+        .filter(|(&(pid, k), _)| pid != local_pid && k == kind)
+        .map(|(_, info)| info);
+    let session_infos = node
         .session_ctxs
         .values()
-        .fold(info, |accu, ctx| {
-            if ctx.face.id != face.id {
-                if let Some(info) = ctx.qabl.get(&kind) {
-                    Some(match accu {
-                        Some(accu) => merge_qabl_infos(accu, info),
-                        None => info.clone(),
-                    })
-                } else {
-                    accu
-                }
-            } else {
-                accu
-            }
-        })
+        .filter(|ctx| ctx.face.id != face.id)
+        .filter_map(|ctx| ctx.qabl.get(&kind));
+
+    router_infos
+        .chain(peer_infos)
+        .chain(session_infos)
+        .cloned()
+        .reduce(|accu, info| merge_qabl_infos(accu, &info))
         .unwrap_or(QueryableInfo {
             complete: 0,
             distance: 0,
