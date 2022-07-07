@@ -560,6 +560,40 @@ impl Tables {
             };
         }
     }
+
+    #[inline]
+    pub(crate) fn remote_router_subs(&self, res: &ResourceTreeIndex) -> bool {
+        self.restree
+            .weight(res)
+            .router_subs
+            .iter()
+            .any(|peer| peer != &self.pid)
+    }
+
+    #[inline]
+    pub(crate) fn remote_peer_subs(&self, res: &ResourceTreeIndex) -> bool {
+        self.restree
+            .weight(res)
+            .peer_subs
+            .iter()
+            .any(|peer| peer != &self.pid)
+    }
+
+    #[inline]
+    pub(crate) fn client_subs(&self, res: &ResourceTreeIndex) -> Vec<Arc<FaceState>> {
+        self.restree
+            .weight(res)
+            .session_ctxs
+            .values()
+            .filter_map(|ctx| {
+                if ctx.subs.is_some() {
+                    Some(ctx.face.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 macro_rules! net {

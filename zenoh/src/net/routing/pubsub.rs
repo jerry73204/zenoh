@@ -337,43 +337,6 @@ pub fn declare_client_subscription(
 }
 
 #[inline]
-fn remote_router_subs(tables: &Tables, res: &ResourceTreeIndex) -> bool {
-    tables
-        .restree
-        .weight(res)
-        .router_subs
-        .iter()
-        .any(|peer| peer != &tables.pid)
-}
-
-#[inline]
-fn remote_peer_subs(tables: &Tables, res: &ResourceTreeIndex) -> bool {
-    tables
-        .restree
-        .weight(res)
-        .peer_subs
-        .iter()
-        .any(|peer| peer != &tables.pid)
-}
-
-#[inline]
-fn client_subs(tables: &Tables, res: &ResourceTreeIndex) -> Vec<Arc<FaceState>> {
-    tables
-        .restree
-        .weight(res)
-        .session_ctxs
-        .values()
-        .filter_map(|ctx| {
-            if ctx.subs.is_some() {
-                Some(ctx.face.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-#[inline]
 fn send_forget_sourced_subscription_to_net_childs(
     restree: &mut ResourceTree,
     faces: &HashMap<FaceId, Arc<FaceState>>,
@@ -573,7 +536,7 @@ pub fn forget_peer_subscription(
             .session_ctxs
             .values()
             .any(|ctx| ctx.subs.is_some());
-        let peer_subs = remote_peer_subs(tables, &res);
+        let peer_subs = tables.remote_peer_subs(&res);
         if !client_subs && !peer_subs {
             undeclare_router_subscription(tables, None, &res, &tables.pid.clone());
         }
@@ -603,9 +566,9 @@ pub(crate) fn undeclare_client_subscription(
     }
     get_mut_unchecked(face).remote_subs.remove(&res);
 
-    let mut client_subs = client_subs(tables, &res);
-    let router_subs = remote_router_subs(tables, &res);
-    let peer_subs = remote_peer_subs(tables, &res);
+    let mut client_subs = tables.client_subs(&res);
+    let router_subs = tables.remote_router_subs(&res);
+    let peer_subs = tables.remote_peer_subs(&res);
     match tables.whatami {
         WhatAmI::Router => {
             if client_subs.is_empty() && !peer_subs {
@@ -707,7 +670,7 @@ pub(crate) fn pubsub_remove_node(tables: &mut Tables, node: &PeerId, net_type: W
                         .session_ctxs
                         .values()
                         .any(|ctx| ctx.subs.is_some());
-                    let peer_subs = remote_peer_subs(tables, &res);
+                    let peer_subs = tables.remote_peer_subs(&res);
                     if !client_subs && !peer_subs {
                         undeclare_router_subscription(tables, None, &res, &tables.pid.clone());
                     }
