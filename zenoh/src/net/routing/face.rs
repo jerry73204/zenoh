@@ -104,30 +104,32 @@ impl FaceState {
         tables: &Tables,
         routing_context: Option<RoutingContext>,
     ) -> Option<PeerId> {
-        match routing_context {
-            Some(routing_context) => {
-                match tables.routers_net.as_ref().unwrap().get_link(self.link_id) {
-                    Some(link) => match link.get_pid_by_rpsid(routing_context.tree_id) {
-                        Some(router) => Some(router),
-                        None => {
-                            log::error!(
-                                "Received router declaration with unknown routing context id {}",
-                                routing_context.tree_id
-                            );
-                            None
-                        }
-                    },
-                    None => {
-                        log::error!(
-                            "Could not find corresponding link in routers network for {}",
-                            self
-                        );
-                        None
-                    }
-                }
-            }
+        let routing_context = match routing_context {
+            Some(routing_context) => routing_context,
             None => {
                 log::error!("Received router declaration with no routing context");
+                return None;
+            }
+        };
+
+        let link = match tables.routers_net.as_ref().unwrap().get_link(self.link_id) {
+            Some(link) => link,
+            None => {
+                log::error!(
+                    "Could not find corresponding link in routers network for {}",
+                    self
+                );
+                return None;
+            }
+        };
+
+        match link.get_pid_by_rpsid(routing_context.tree_id) {
+            Some(router) => Some(router),
+            None => {
+                log::error!(
+                    "Received router declaration with unknown routing context id {}",
+                    routing_context.tree_id
+                );
                 None
             }
         }
