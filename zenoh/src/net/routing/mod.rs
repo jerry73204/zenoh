@@ -11,6 +11,7 @@
 // Contributors:
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
+mod error;
 pub mod face;
 pub mod network;
 pub mod pubsub;
