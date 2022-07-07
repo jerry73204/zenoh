@@ -65,37 +65,23 @@ fn merge_qabl_infos(mut this: QueryableInfo, info: &QueryableInfo) -> QueryableI
 }
 
 fn local_router_qabl_info(tables: &Tables, res: &ResourceTreeIndex, kind: ZInt) -> QueryableInfo {
-    let info =
-        tables
-            .restree
-            .weight(res)
-            .peer_qabls
-            .iter()
-            .fold(None, |accu, (&(pid, k), info)| {
-                if pid != tables.pid && k == kind {
-                    Some(match accu {
-                        Some(accu) => merge_qabl_infos(accu, info),
-                        None => info.clone(),
-                    })
-                } else {
-                    accu
-                }
-            });
-    tables
-        .restree
-        .weight(res)
+    let node = tables.restree.weight(res);
+
+    let peer_infos = node
+        .peer_qabls
+        .iter()
+        .filter(|(&(pid, k), _)| pid != tables.pid && k == kind)
+        .map(|(_, info)| info);
+
+    let sessino_infos = node
         .session_ctxs
         .values()
-        .fold(info, |accu, ctx| {
-            if let Some(info) = ctx.qabl.get(&kind) {
-                Some(match accu {
-                    Some(accu) => merge_qabl_infos(accu, info),
-                    None => info.clone(),
-                })
-            } else {
-                accu
-            }
-        })
+        .filter_map(|ctx| ctx.qabl.get(&kind));
+
+    peer_infos
+        .chain(sessino_infos)
+        .cloned()
+        .reduce(|accu, info| merge_qabl_infos(accu, &info))
         .unwrap_or(QueryableInfo {
             complete: 0,
             distance: 0,
