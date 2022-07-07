@@ -401,20 +401,19 @@ fn propagate_forget_simple_subscription(tables: &mut Tables, res: &ResourceTreeI
 }
 
 fn propagate_forget_sourced_subscription(
-    tables: &mut Tables,
+    restree: &mut ResourceTree,
+    faces: &HashMap<FaceId, Arc<FaceState>>,
+    net: &Network,
     res: &ResourceTreeIndex,
     src_face: Option<&Arc<FaceState>>,
     source: &PeerId,
-    net_type: WhatAmI,
 ) {
-    let net = net!(tables, net_type).unwrap();
-    let restree = &mut tables.restree;
     match net.get_node_from_pid(*source) {
         Some((tree_sid, _)) => {
             if let Some(tree) = net.trees.get(tree_sid.index()) {
                 send_forget_sourced_subscription_to_net_childs(
                     restree,
-                    &tables.faces,
+                    faces,
                     net,
                     &tree.childs,
                     res,
@@ -424,7 +423,7 @@ fn propagate_forget_sourced_subscription(
             } else {
                 log::trace!(
                     "Propagating forget sub {}: tree for node {} sid:{} not yet ready",
-                    tables.restree.expr(res),
+                    restree.expr(res),
                     tree_sid.index(),
                     source
                 );
@@ -432,7 +431,7 @@ fn propagate_forget_sourced_subscription(
         }
         None => log::error!(
             "Error propagating forget sub {}: cannot get index of {}!",
-            tables.restree.expr(res),
+            restree.expr(res),
             source
         ),
     }
@@ -467,7 +466,14 @@ fn undeclare_router_subscription(
 ) {
     if tables.restree.weight(res).router_subs.contains(router) {
         unregister_router_subscription(tables, res, router);
-        propagate_forget_sourced_subscription(tables, res, face, router, WhatAmI::Router);
+        propagate_forget_sourced_subscription(
+            &mut tables.restree,
+            &tables.faces,
+            tables.routers_net.as_ref().unwrap(),
+            res,
+            face,
+            router,
+        );
     }
 }
 
@@ -516,7 +522,14 @@ fn undeclare_peer_subscription(
 ) {
     if tables.restree.weight(res).peer_subs.contains(peer) {
         unregister_peer_subscription(tables, res, peer);
-        propagate_forget_sourced_subscription(tables, res, face, peer, WhatAmI::Peer);
+        propagate_forget_sourced_subscription(
+            &mut tables.restree,
+            &tables.faces,
+            tables.peers_net.as_ref().unwrap(),
+            res,
+            face,
+            peer,
+        );
     }
 }
 
