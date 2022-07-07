@@ -103,40 +103,26 @@ fn local_router_qabl_info(tables: &Tables, res: &ResourceTreeIndex, kind: ZInt) 
 }
 
 fn local_peer_qabl_info(tables: &Tables, res: &ResourceTreeIndex, kind: ZInt) -> QueryableInfo {
-    let info = if tables.whatami == WhatAmI::Router {
-        tables
-            .restree
-            .weight(res)
-            .router_qabls
-            .iter()
-            .fold(None, |accu, (&(pid, k), info)| {
-                if pid != tables.pid && k == kind {
-                    Some(match accu {
-                        Some(accu) => merge_qabl_infos(accu, info),
-                        None => info.clone(),
-                    })
-                } else {
-                    accu
-                }
-            })
-    } else {
-        None
-    };
-    tables
-        .restree
-        .weight(res)
+    let node = tables.restree.weight(res);
+
+    let router_infos = (tables.whatami == WhatAmI::Router)
+        .then(|| {
+            node.router_qabls
+                .iter()
+                .filter(|(&(pid, k), _)| pid != tables.pid && k == kind)
+                .map(|(_, info)| info)
+        })
+        .into_iter()
+        .flatten();
+    let session_infos = node
         .session_ctxs
         .values()
-        .fold(info, |accu, ctx| {
-            if let Some(info) = ctx.qabl.get(&kind) {
-                Some(match accu {
-                    Some(accu) => merge_qabl_infos(accu, info),
-                    None => info.clone(),
-                })
-            } else {
-                accu
-            }
-        })
+        .filter_map(|ctx| ctx.qabl.get(&kind));
+
+    router_infos
+        .chain(session_infos)
+        .cloned()
+        .reduce(|accu, info| merge_qabl_infos(accu, &info))
         .unwrap_or(QueryableInfo {
             complete: 0,
             distance: 0,
