@@ -719,42 +719,57 @@ pub(crate) fn pubsub_tree_change(
 ) {
     let net = net!(tables, net_type).unwrap();
     let restree = &mut tables.restree;
-    // propagate subs to new childs
-    for (tree_sid, tree_childs) in new_childs.iter().enumerate() {
-        if !tree_childs.is_empty() {
-            let tree_idx = NodeIndex::new(tree_sid);
-            if let Some(node) = net.graph.node_weight(tree_idx) {
-                let tree_id = node.pid;
+    let subs_res = match net_type {
+        WhatAmI::Router => &tables.router_subs,
+        WhatAmI::Peer => &tables.peer_subs,
+        WhatAmI::Client => unreachable!(),
+    };
 
-                let subs_res = match net_type {
-                    WhatAmI::Router => &tables.router_subs,
-                    _ => &tables.peer_subs,
+    let childs_iter = new_childs
+        .iter()
+        .enumerate()
+        .filter(|(_, tree_childs)| !tree_childs.is_empty())
+        .filter_map(|(tree_sid, tree_childs)| {
+            let tree_idx = NodeIndex::new(tree_sid);
+            let node = net.graph.node_weight(tree_idx)?;
+            Some((tree_sid, tree_childs, node))
+        });
+
+    // propagate subs to new childs
+    for (tree_sid, tree_childs, node) in childs_iter {
+        let tree_id = node.pid;
+
+        for res in subs_res {
+            let mut subs = VecMapWalker::new();
+
+            loop {
+                let subs_res2 = match net_type {
+                    WhatAmI::Router => &restree.weight(res).router_subs,
+                    WhatAmI::Peer => &restree.weight(res).peer_subs,
+                    WhatAmI::Client => unreachable!(),
+                };
+                let sub = match subs.walk_next(subs_res2) {
+                    Some(&sub) => sub,
+                    None => break,
                 };
 
-                for res in subs_res {
-                    let mut subs = VecMapWalker::new();
-                    while let Some(sub) = subs.walk_next(match net_type {
-                        WhatAmI::Router => &restree.weight(res).router_subs,
-                        _ => &restree.weight(res).peer_subs,
-                    }) {
-                        if *sub == tree_id {
-                            let sub_info = SubInfo {
-                                reliability: Reliability::Reliable, // @TODO
-                                mode: SubMode::Push,
-                                period: None,
-                            };
-                            send_sourced_subscription_to_net_childs(
-                                restree,
-                                &tables.faces,
-                                net,
-                                tree_childs,
-                                res,
-                                None,
-                                &sub_info,
-                                Some(RoutingContext::new(tree_sid as ZInt)),
-                            );
-                        }
-                    }
+                if sub == tree_id {
+                    let sub_info = SubInfo {
+                        reliability: Reliability::Reliable, // @TODO
+                        mode: SubMode::Push,
+                        period: None,
+                    };
+
+                    send_sourced_subscription_to_net_childs(
+                        restree,
+                        &tables.faces,
+                        net,
+                        tree_childs,
+                        res,
+                        None,
+                        &sub_info,
+                        Some(RoutingContext::new(tree_sid as ZInt)),
+                    );
                 }
             }
         }
