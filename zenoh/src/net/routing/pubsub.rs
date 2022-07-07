@@ -101,22 +101,20 @@ fn propagate_simple_subscription(
 }
 
 fn propagate_sourced_subscription(
-    tables: &mut Tables,
+    restree: &mut ResourceTree,
+    faces: &HashMap<FaceId, Arc<FaceState>>,
+    net: &Network,
     res: &ResourceTreeIndex,
     sub_info: &SubInfo,
     src_face: Option<&Arc<FaceState>>,
     source: &PeerId,
-    net_type: WhatAmI,
 ) {
-    let restree = &mut tables.restree;
-    let net = net!(tables, net_type).unwrap();
-
     let tree_sid = match net.get_node_from_pid(*source) {
         Some((tree_sid, _)) => tree_sid,
         None => {
             log::error!(
                 "Error propagating sub {}: cannot get index of {}!",
-                tables.restree.expr(res),
+                restree.expr(res),
                 source
             );
             return;
@@ -128,7 +126,7 @@ fn propagate_sourced_subscription(
         None => {
             log::trace!(
                 "Propagating sub {}: tree for node {} sid:{} not yet ready",
-                tables.restree.expr(res),
+                restree.expr(res),
                 tree_sid.index(),
                 source
             );
@@ -138,7 +136,7 @@ fn propagate_sourced_subscription(
 
     send_sourced_subscription_to_net_childs(
         restree,
-        &tables.faces,
+        faces,
         net,
         &tree.childs,
         res,
@@ -168,11 +166,20 @@ fn register_router_subscription(
         }
 
         // Propagate subscription to routers
-        propagate_sourced_subscription(tables, res, sub_info, Some(face), &router, WhatAmI::Router);
-    }
-    // Propagate subscription to peers
-    if face.whatami != WhatAmI::Peer {
-        register_peer_subscription(tables, face, res, sub_info, tables.pid)
+        propagate_sourced_subscription(
+            &mut tables.restree,
+            &tables.faces,
+            tables.routers_net.as_ref().unwrap(),
+            res,
+            sub_info,
+            Some(face),
+            &router,
+        );
+
+        // Propagate subscription to peers
+        if face.whatami != WhatAmI::Peer {
+            register_peer_subscription(tables, face, res, sub_info, tables.pid)
+        }
     }
 
     // Propagate subscription to clients
@@ -221,7 +228,15 @@ fn register_peer_subscription(
         }
 
         // Propagate subscription to peers
-        propagate_sourced_subscription(tables, res, sub_info, Some(face), &peer, WhatAmI::Peer);
+        propagate_sourced_subscription(
+            &mut tables.restree,
+            &tables.faces,
+            tables.peers_net.as_ref().unwrap(),
+            res,
+            sub_info,
+            Some(face),
+            &peer,
+        );
     }
 }
 
