@@ -269,35 +269,42 @@ fn propagate_sourced_queryable(
 ) {
     let net = net!(tables, net_type).unwrap();
     let restree = &mut tables.restree;
-    match net.get_node_from_pid(*source) {
-        Some((tree_sid, _)) => {
-            if let Some(tree) = net.trees.get(tree_sid.index()) {
-                send_sourced_queryable_to_net_childs(
-                    restree,
-                    &tables.faces,
-                    net,
-                    &tree.childs,
-                    res,
-                    kind,
-                    qabl_info,
-                    src_face,
-                    Some(RoutingContext::new(tree_sid.index() as ZInt)),
-                );
-            } else {
-                log::trace!(
-                    "Propagating qabl {}: tree for node {} sid:{} not yet ready",
-                    tables.restree.expr(res),
-                    tree_sid.index(),
-                    source
-                );
-            }
+
+    let tree_sid = match net.get_node_from_pid(*source) {
+        Some((tree_sid, _)) => tree_sid,
+        None => {
+            log::error!(
+                "Error propagating qabl {}: cannot get index of {}!",
+                tables.restree.expr(res),
+                source
+            );
+            return;
         }
-        None => log::error!(
-            "Error propagating qabl {}: cannot get index of {}!",
+    };
+
+    let tree = if let Some(tree) = net.trees.get(tree_sid.index()) {
+        tree
+    } else {
+        log::trace!(
+            "Propagating qabl {}: tree for node {} sid:{} not yet ready",
             tables.restree.expr(res),
+            tree_sid.index(),
             source
-        ),
-    }
+        );
+        return;
+    };
+
+    send_sourced_queryable_to_net_childs(
+        restree,
+        &tables.faces,
+        net,
+        &tree.childs,
+        res,
+        kind,
+        qabl_info,
+        src_face,
+        Some(RoutingContext::new(tree_sid.index() as ZInt)),
+    );
 }
 
 fn register_router_queryable(
