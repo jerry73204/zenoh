@@ -449,45 +449,34 @@ pub fn declare_client_queryable(
     kind: ZInt,
     qabl_info: &QueryableInfo,
 ) {
-    match tables.get_mapping(face, &expr.scope).cloned() {
-        Some(prefix) => {
-            let res = tables.restree.get_or_insert(&prefix, expr.suffix.as_ref());
-            tables.match_resource(&res);
-
-            register_client_queryable(tables, face, &res, kind, qabl_info);
-
-            match tables.whatami {
-                WhatAmI::Router => {
-                    let local_details = local_router_qabl_info(tables, &res, kind);
-                    register_router_queryable(
-                        tables,
-                        Some(face),
-                        &res,
-                        kind,
-                        &local_details,
-                        tables.pid,
-                    );
-                }
-                WhatAmI::Peer => {
-                    let local_details = local_peer_qabl_info(tables, &res, kind);
-                    register_peer_queryable(
-                        tables,
-                        Some(face),
-                        &res,
-                        kind,
-                        &local_details,
-                        tables.pid,
-                    );
-                }
-                _ => {
-                    propagate_simple_queryable(tables, &res, kind, Some(face));
-                }
-            }
-
-            compute_matches_query_routes(tables, &res);
+    let prefix = match tables.get_mapping(face, &expr.scope).cloned() {
+        Some(prefix) => prefix,
+        None => {
+            log::error!("Declare queryable for unknown scope {}!", expr.scope);
+            return;
         }
-        None => log::error!("Declare queryable for unknown scope {}!", expr.scope),
+    };
+
+    let res = tables.restree.get_or_insert(&prefix, expr.suffix.as_ref());
+    tables.match_resource(&res);
+
+    register_client_queryable(tables, face, &res, kind, qabl_info);
+
+    match tables.whatami {
+        WhatAmI::Router => {
+            let local_details = local_router_qabl_info(tables, &res, kind);
+            register_router_queryable(tables, Some(face), &res, kind, &local_details, tables.pid);
+        }
+        WhatAmI::Peer => {
+            let local_details = local_peer_qabl_info(tables, &res, kind);
+            register_peer_queryable(tables, Some(face), &res, kind, &local_details, tables.pid);
+        }
+        WhatAmI::Client => {
+            propagate_simple_queryable(tables, &res, kind, Some(face));
+        }
     }
+
+    compute_matches_query_routes(tables, &res);
 }
 
 #[inline]
