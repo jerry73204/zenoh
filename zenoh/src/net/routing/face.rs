@@ -258,9 +258,11 @@ impl Primitives for Face {
         qabl_info: &QueryableInfo,
         routing_context: Option<RoutingContext>,
     ) {
+        use WhatAmI as W;
+
         let mut tables = zwrite!(self.tables);
         match (tables.whatami, self.state.whatami) {
-            (WhatAmI::Router, WhatAmI::Router) => {
+            (W::Router, W::Router) => {
                 if let Some(router) = self.state.get_router(&tables, routing_context) {
                     declare_router_queryable(
                         &mut tables,
@@ -272,9 +274,7 @@ impl Primitives for Face {
                     )
                 }
             }
-            (WhatAmI::Router, WhatAmI::Peer)
-            | (WhatAmI::Peer, WhatAmI::Router)
-            | (WhatAmI::Peer, WhatAmI::Peer) => {
+            (W::Router, W::Peer) | (W::Peer, W::Router | W::Peer) => {
                 if let Some(peer) = self.state.get_peer(&tables, routing_context) {
                     declare_peer_queryable(
                         &mut tables,
@@ -286,7 +286,7 @@ impl Primitives for Face {
                     )
                 }
             }
-            _ => declare_client_queryable(
+            (W::Client, _) | (_, W::Client) => declare_client_queryable(
                 &mut tables,
                 &self.state.clone(),
                 key_expr,
