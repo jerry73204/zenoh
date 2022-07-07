@@ -208,17 +208,25 @@ fn propagate_simple_queryable(
     let pid = tables.pid;
     let faces = &mut tables.faces;
     let restree = &mut tables.restree;
+
     for dst_face in &mut faces.values_mut() {
         let info = local_qabl_info(restree, whatami, pid, res, kind, dst_face);
         let current_info = dst_face.local_qabls.get(&(res.clone(), kind));
-        if (src_face.is_none() || src_face.as_ref().unwrap().id != dst_face.id)
-            && (current_info.is_none() || *current_info.unwrap() != info)
-            && match tables.whatami {
-                WhatAmI::Router => dst_face.whatami == WhatAmI::Client,
-                WhatAmI::Peer => dst_face.whatami == WhatAmI::Client,
-                _ => true,
-            }
-        {
+
+        let distinct_faces = match src_face {
+            Some(src_face) => src_face.id != dst_face.id,
+            None => true,
+        };
+        let distinct_infos = match current_info {
+            Some(current_info) => current_info != &info,
+            None => true,
+        };
+        let has_clients = matches!(
+            (tables.whatami, dst_face.whatami),
+            (WhatAmI::Client, _) | (_, WhatAmI::Client)
+        );
+
+        if distinct_faces && distinct_infos && has_clients {
             get_mut_unchecked(dst_face)
                 .local_qabls
                 .insert((res.clone(), kind), info.clone());
