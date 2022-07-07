@@ -548,31 +548,39 @@ pub fn forget_peer_subscription(
     expr: &KeyExpr,
     peer: &PeerId,
 ) {
-    match tables.get_mapping(face, &expr.scope) {
-        Some(prefix) => match tables.restree.get(prefix, expr.suffix.as_ref()) {
-            Some(res) => {
-                undeclare_peer_subscription(tables, Some(face), &res, peer);
+    let prefix = match tables.get_mapping(face, &expr.scope) {
+        Some(prefix) => prefix,
+        None => {
+            log::error!("Undeclare peer subscription with unknown scope!");
+            return;
+        }
+    };
 
-                if tables.whatami == WhatAmI::Router {
-                    let client_subs = tables
-                        .restree
-                        .weight(&res)
-                        .session_ctxs
-                        .values()
-                        .any(|ctx| ctx.subs.is_some());
-                    let peer_subs = remote_peer_subs(tables, &res);
-                    if !client_subs && !peer_subs {
-                        undeclare_router_subscription(tables, None, &res, &tables.pid.clone());
-                    }
-                }
+    let res = match tables.restree.get(prefix, expr.suffix.as_ref()) {
+        Some(res) => res,
+        None => {
+            log::error!("Undeclare unknown peer subscription!");
+            return;
+        }
+    };
 
-                compute_matches_data_routes(tables, &res);
-                tables.clean_resource(res);
-            }
-            None => log::error!("Undeclare unknown peer subscription!"),
-        },
-        None => log::error!("Undeclare peer subscription with unknown scope!"),
+    undeclare_peer_subscription(tables, Some(face), &res, peer);
+
+    if tables.whatami == WhatAmI::Router {
+        let client_subs = tables
+            .restree
+            .weight(&res)
+            .session_ctxs
+            .values()
+            .any(|ctx| ctx.subs.is_some());
+        let peer_subs = remote_peer_subs(tables, &res);
+        if !client_subs && !peer_subs {
+            undeclare_router_subscription(tables, None, &res, &tables.pid.clone());
+        }
     }
+
+    compute_matches_data_routes(tables, &res);
+    tables.clean_resource(res);
 }
 
 pub(crate) fn undeclare_client_subscription(
