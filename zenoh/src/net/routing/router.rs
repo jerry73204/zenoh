@@ -67,7 +67,7 @@ pub(crate) type ResourceTree =
     ResTree<ArcTree<ResourceContext>, ResourceTreeIndex, ResourceContext>;
 pub(crate) type ResourceTreeIndex = Index<ResourceContext>;
 pub(crate) type ResourceTreeWeakIndex = WeakIndex<ResourceContext>;
-pub(super) type Direction = (Arc<FaceState>, KeyExpr<'static>, Option<RoutingContext>);
+
 pub(super) type Route = HashMap<FaceId, Direction>;
 #[cfg(feature = "complete_n")]
 pub(super) type QueryRoute = HashMap<FaceId, (Direction, zenoh_protocol_core::Target)>;
@@ -82,6 +82,14 @@ pub(super) struct TargetQabl {
 
 pub(super) type TargetQablSet = Vec<TargetQabl>;
 pub(super) type PullCaches = Vec<Arc<SessionContext>>;
+
+#[derive(Clone)]
+pub(super) struct Direction {
+    pub face: Arc<FaceState>,
+    pub key_expr: KeyExpr<'static>,
+    pub context: Option<RoutingContext>,
+}
+// pub(super) type Direction = (Arc<FaceState>, KeyExpr<'static>, Option<RoutingContext>);
 
 pub(crate) struct SessionContext {
     pub(super) face: Arc<FaceState>,

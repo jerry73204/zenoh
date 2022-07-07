@@ -33,11 +33,11 @@ use zenoh_protocol_core::{
 use super::face::{FaceId, FaceState};
 use super::network::Network;
 use super::restree::Strengthen;
-use super::router::Tables;
 use super::router::{
     net, Matches, QueryRoute, ResourceTree, ResourceTreeIndex, SessionContext, TargetQabl,
     TargetQablSet,
 };
+use super::router::{Direction, Tables};
 
 pub(crate) struct Query {
     src_face: Arc<FaceState>,
@@ -1066,15 +1066,15 @@ fn insert_target_for_qabls(
             let distance = *net.distances.get(qabl_idx.index())?;
             let key_expr = Tables::get_best_key(&tables.restree, prefix, suffix, face.id);
             route.push(TargetQabl {
-                direction: (
-                    face.clone(),
-                    key_expr.to_owned(),
-                    if source.index() != 0 {
+                direction: Direction {
+                    face: face.clone(),
+                    key_expr: key_expr.to_owned(),
+                    context: if source.index() != 0 {
                         Some(RoutingContext::new(source.index() as ZInt))
                     } else {
                         None
                     },
-                ),
+                },
                 complete: if complete { qabl_info.complete } else { 0 },
                 kind: *qabl_kind,
                 distance,
@@ -1170,7 +1170,11 @@ fn compute_query_route(
                 let key_expr = Tables::get_best_key(&tables.restree, prefix, suffix, sid);
                 for (qabl_kind, qabl_info) in &context.qabl {
                     route.push(TargetQabl {
-                        direction: (context.face.clone(), key_expr.to_owned(), None),
+                        direction: Direction {
+                            face: context.face.clone(),
+                            key_expr: key_expr.to_owned(),
+                            context: None,
+                        },
                         complete: if complete { qabl_info.complete } else { 0 },
                         kind: *qabl_kind,
                         distance: 0.5,
@@ -1259,17 +1263,17 @@ fn compute_final_route(
         Target::All => {
             let mut route = HashMap::new();
             for qabl in qabls.iter() {
-                if qabl.direction.0.id != src_face.id && matching_kind(target.kind, qabl.kind) {
+                if qabl.direction.face.id != src_face.id && matching_kind(target.kind, qabl.kind) {
                     #[cfg(feature = "complete_n")]
                     {
                         route
-                            .entry(qabl.direction.0.id)
+                            .entry(qabl.direction.face.id)
                             .or_insert_with(|| (qabl.direction.clone(), target.target.clone()));
                     }
                     #[cfg(not(feature = "complete_n"))]
                     {
                         route
-                            .entry(qabl.direction.0.id)
+                            .entry(qabl.direction.face.id)
                             .or_insert_with(|| qabl.direction.clone());
                     }
                 }
@@ -1279,20 +1283,20 @@ fn compute_final_route(
         Target::AllComplete => {
             let mut route = HashMap::new();
             for qabl in qabls.iter() {
-                if qabl.direction.0.id != src_face.id
+                if qabl.direction.face.id != src_face.id
                     && matching_kind(target.kind, qabl.kind)
                     && qabl.complete > 0
                 {
                     #[cfg(feature = "complete_n")]
                     {
                         route
-                            .entry(qabl.direction.0.id)
+                            .entry(qabl.direction.face.id)
                             .or_insert_with(|| (qabl.direction.clone(), target.target.clone()));
                     }
                     #[cfg(not(feature = "complete_n"))]
                     {
                         route
-                            .entry(qabl.direction.0.id)
+                            .entry(qabl.direction.face.id)
                             .or_insert_with(|| qabl.direction.clone());
                     }
                 }
@@ -1304,13 +1308,13 @@ fn compute_final_route(
             let mut route = HashMap::new();
             let mut remaining = *n;
             for qabl in qabls.iter() {
-                if qabl.direction.0.id != src_face.id
+                if qabl.direction.face.id != src_face.id
                     && matching_kind(target.kind, qabl.kind)
                     && qabl.complete > 0
                 {
                     let nb = std::cmp::min(qabl.complete, remaining);
                     route
-                        .entry(qabl.direction.0.id)
+                        .entry(qabl.direction.face.id)
                         .or_insert_with(|| (qabl.direction.clone(), Target::Complete(nb)));
                     remaining -= nb;
                     if remaining == 0 {
@@ -1322,7 +1326,7 @@ fn compute_final_route(
         }
         Target::BestMatching => {
             if let Some(qabl) = qabls.iter().find(|qabl| {
-                qabl.direction.0.id != src_face.id
+                qabl.direction.face.id != src_face.id
                     && qabl.complete > 0
                     && matching_kind(target.kind, qabl.kind)
             }) {
@@ -1330,13 +1334,13 @@ fn compute_final_route(
                 #[cfg(feature = "complete_n")]
                 {
                     route.insert(
-                        qabl.direction.0.id,
+                        qabl.direction.face.id,
                         (qabl.direction.clone(), target.target.clone()),
                     );
                 }
                 #[cfg(not(feature = "complete_n"))]
                 {
-                    route.insert(qabl.direction.0.id, qabl.direction.clone());
+                    route.insert(qabl.direction.face.id, qabl.direction.clone());
                 }
                 route
             } else {
@@ -1534,7 +1538,12 @@ pub fn route_query(
     // let timeout = tables.queries_default_timeout;
     // drop(tables);
     #[cfg(feature = "complete_n")]
-    for ((outface, key_expr, context), t) in route.values() {
+    for (direction, t) in route.values() {
+        let Direction {
+            face: outface,
+            key_expr,
+            context,
+        } = direction;
         let outface = outface.clone();
         let outface_mut = get_mut_unchecked(&outface);
         outface_mut.next_qid += 1;
@@ -1565,7 +1574,12 @@ pub fn route_query(
     }
 
     #[cfg(not(feature = "complete_n"))]
-    for (outface, key_expr, context) in route.values() {
+    for direction in route.values() {
+        let Direction {
+            face: outface,
+            key_expr,
+            context,
+        } = direction;
         let outface_mut = get_mut_unchecked(outface);
         outface_mut.next_qid += 1;
         let qid = outface_mut.next_qid;

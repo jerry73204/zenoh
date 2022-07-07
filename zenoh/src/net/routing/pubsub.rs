@@ -32,7 +32,7 @@ use super::face::{FaceId, FaceState};
 use super::network::Network;
 use super::restree::Strengthen;
 use super::router::{
-    net, PullCaches, ResourceTree, ResourceTreeIndex, Route, SessionContext, Tables,
+    net, Direction, PullCaches, ResourceTree, ResourceTreeIndex, Route, SessionContext, Tables,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -809,15 +809,16 @@ fn insert_faces_for_subs(
 
             route.entry(face.id).or_insert_with(|| {
                 let key_expr = Tables::get_best_key(&tables.restree, prefix, suffix, face.id);
-                (
-                    face.clone(),
-                    key_expr.to_owned(),
-                    if source.index() != 0 {
+
+                Direction {
+                    face: face.clone(),
+                    key_expr: key_expr.to_owned(),
+                    context: if source.index() != 0 {
                         Some(RoutingContext::new(source.index() as ZInt))
                     } else {
                         None
                     },
-                )
+                }
             });
         }
 
@@ -904,7 +905,11 @@ fn compute_data_route(
                         route.entry(*sid).or_insert_with(|| {
                             let key_expr =
                                 Tables::get_best_key(&tables.restree, prefix, suffix, *sid);
-                            (context.face.clone(), key_expr.to_owned(), None)
+                            Direction {
+                                face: context.face.clone(),
+                                key_expr: key_expr.to_owned(),
+                                context: None,
+                            }
                         });
                     }
                 }
@@ -1147,7 +1152,11 @@ fn send_to_first(
     cong_ctrl: CongestionControl,
     data_info: Option<DataInfo>,
 ) {
-    let (outface, key_expr, context) = route.values().next().unwrap();
+    let Direction {
+        face: outface,
+        key_expr,
+        context,
+    } = route.values().next().unwrap();
     if srcface.id != outface.id {
         outface.primitives.send_data(
             key_expr, payload,
@@ -1165,7 +1174,13 @@ fn send_to_all(
     cong_ctrl: CongestionControl,
     data_info: Option<DataInfo>,
 ) {
-    for (outface, key_expr, context) in route.values() {
+    for direction in route.values() {
+        let Direction {
+            face: outface,
+            key_expr,
+            context,
+        } = direction;
+
         if srcface.id != outface.id {
             outface.primitives.send_data(
                 key_expr,
