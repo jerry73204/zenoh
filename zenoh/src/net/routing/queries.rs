@@ -44,6 +44,7 @@ pub(crate) struct Query {
     src_qid: ZInt,
 }
 
+/// Merge a pair of [QueryableInfo]s (complete_n version).
 #[cfg(feature = "complete_n")]
 #[inline]
 fn merge_qabl_infos(mut this: QueryableInfo, info: &QueryableInfo) -> QueryableInfo {
@@ -52,6 +53,7 @@ fn merge_qabl_infos(mut this: QueryableInfo, info: &QueryableInfo) -> QueryableI
     this
 }
 
+/// Merge a pair of [QueryableInfo]s (non-complete_n version).
 #[cfg(not(feature = "complete_n"))]
 #[inline]
 fn merge_qabl_infos(mut this: QueryableInfo, info: &QueryableInfo) -> QueryableInfo {

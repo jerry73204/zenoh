@@ -109,6 +109,9 @@ fn propagate_sourced_subscription(
     src_face: Option<&Arc<FaceState>>,
     source: &PeerId,
 ) {
+    /*
+    Find the tree for the source peer
+    */
     let tree_sid = match net.get_node_from_pid(*source) {
         Some((tree_sid, _)) => tree_sid,
         None => {
@@ -134,6 +137,9 @@ fn propagate_sourced_subscription(
         }
     };
 
+    /*
+    Send to the belonging children on the tree.
+    */
     send_sourced_subscription_to_net_childs(
         restree,
         faces,
