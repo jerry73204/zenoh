@@ -68,7 +68,7 @@ pub(crate) struct TransportUnicastInner {
     // Rx conduits
     pub(super) conduit_rx: Arc<[TransportConduitRx]>,
     // The links associated to the channel
-    pub(super) links: Arc<RwLock<Box<[TransportLinkUnicast]>>>,
+    pub(super) links: Arc<RwLock<Vec<TransportLinkUnicast>>>,
     // The callback
     pub(super) callback: Arc<RwLock<Option<Arc<dyn TransportPeerEventHandler>>>>,
     // Mutex for notification
@@ -107,7 +107,7 @@ impl TransportUnicastInner {
             config,
             conduit_tx: conduit_tx.into_boxed_slice().into(),
             conduit_rx: conduit_rx.into_boxed_slice().into(),
-            links: Arc::new(RwLock::new(vec![].into_boxed_slice())),
+            links: Arc::new(RwLock::new(vec![])),
             callback: Arc::new(RwLock::new(None)),
             alive: Arc::new(AsyncMutex::new(false)),
             #[cfg(feature = "stats")]
@@ -183,7 +183,7 @@ impl TransportUnicastInner {
         let mut links = {
             let mut l_guard = zwrite!(self.links);
             let links = l_guard.to_vec();
-            *l_guard = vec![].into_boxed_slice();
+            *l_guard = vec![];
             links
         };
         for l in links.drain(..) {
@@ -232,7 +232,7 @@ impl TransportUnicastInner {
         let mut links = Vec::with_capacity(guard.len() + 1);
         links.extend_from_slice(&guard);
         links.push(link);
-        *guard = links.into_boxed_slice();
+        *guard = links;
 
         Ok(())
     }
@@ -332,7 +332,7 @@ impl TransportUnicastInner {
                     // Remove the link
                     let mut links = guard.to_vec();
                     let stl = links.remove(index);
-                    *guard = links.into_boxed_slice();
+                    *guard = links;
                     drop(guard);
                     // Notify the callback
                     if let Some(callback) = zread!(self.callback).as_ref() {

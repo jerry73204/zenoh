@@ -42,7 +42,7 @@ pub(super) struct TransportMulticastPeer {
     pub(super) lease: Duration,
     pub(super) whatchdog: Arc<AtomicBool>,
     pub(super) handle: TimedHandle,
-    pub(super) conduit_rx: Box<[TransportConduitRx]>,
+    pub(super) conduit_rx: Vec<TransportConduitRx>,
     pub(super) handler: Arc<dyn TransportPeerEventHandler>,
 }
 
@@ -371,8 +371,7 @@ impl TransportMulticastInner {
                 }
                 tcrs
             }
-        }
-        .into_boxed_slice();
+        };
 
         // Create lease event
         let whatchdog = Arc::new(AtomicBool::new(false));
