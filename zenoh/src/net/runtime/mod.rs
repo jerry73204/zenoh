@@ -210,7 +210,11 @@ impl TransportEventHandler for RuntimeTransportEventHandler {
             Some(runtime) => Ok(Arc::new(RuntimeSession {
                 runtime: runtime.clone(),
                 endpoint: std::sync::RwLock::new(None),
-                sub_event_handler: runtime.router.new_transport_unicast(transport).unwrap(),
+                sub_event_handler: runtime
+                    .router
+                    .clone()
+                    .new_transport_unicast(transport)
+                    .unwrap(),
             })),
             None => bail!("Runtime not yet ready!"),
         }
@@ -238,7 +242,7 @@ impl TransportPeerEventHandler for RuntimeSession {
             if data.reply_context.is_none() {
                 let face = &self.sub_event_handler.face.state;
                 full_reentrant_route_data(
-                    &self.sub_event_handler.tables,
+                    &self.sub_event_handler.router.tables,
                     face,
                     &data.key,
                     msg.channel,

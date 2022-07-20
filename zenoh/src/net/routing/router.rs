@@ -17,11 +17,12 @@ pub use super::pubsub::*;
 pub use super::queries::*;
 pub use super::resource::*;
 use super::runtime::Runtime;
-use async_std::task::JoinHandle;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Weak};
 use std::sync::{Mutex, RwLock};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uhlc::HLC;
 use zenoh_link::Link;
@@ -55,8 +56,6 @@ pub struct Tables {
     pub(crate) routers_net: Option<Network>,
     pub(crate) peers_net: Option<Network>,
     pub(crate) shared_nodes: Vec<PeerId>,
-    pub(crate) routers_trees_task: Option<JoinHandle<()>>,
-    pub(crate) peers_trees_task: Option<JoinHandle<()>>,
 }
 
 impl Tables {
@@ -83,8 +82,8 @@ impl Tables {
             routers_net: None,
             peers_net: None,
             shared_nodes: vec![],
-            routers_trees_task: None,
-            peers_trees_task: None,
+            // routers_trees_task: None,
+            // peers_trees_task: None,
         }
     }
 
@@ -207,48 +206,12 @@ impl Tables {
             }
         }
     }
-
-    pub(crate) fn schedule_compute_trees(
-        &mut self,
-        tables_ref: Arc<RwLock<Tables>>,
-        net_type: WhatAmI,
-    ) {
-        log::trace!("Schedule computations");
-        if (net_type == WhatAmI::Router && self.routers_trees_task.is_none())
-            || (net_type == WhatAmI::Peer && self.peers_trees_task.is_none())
-        {
-            let task = Some(async_std::task::spawn(async move {
-                async_std::task::sleep(std::time::Duration::from_millis(*TREES_COMPUTATION_DELAY))
-                    .await;
-                let mut tables = zwrite!(tables_ref);
-
-                log::trace!("Compute trees");
-                let new_childs = match net_type {
-                    WhatAmI::Router => tables.routers_net.as_mut().unwrap().compute_trees(),
-                    _ => tables.peers_net.as_mut().unwrap().compute_trees(),
-                };
-
-                log::trace!("Compute routes");
-                pubsub_tree_change(&mut tables, &new_childs, net_type);
-                queries_tree_change(&mut tables, &new_childs, net_type);
-
-                log::trace!("Computations completed");
-                match net_type {
-                    WhatAmI::Router => tables.routers_trees_task = None,
-                    _ => tables.peers_trees_task = None,
-                };
-            }));
-            match net_type {
-                WhatAmI::Router => self.routers_trees_task = task,
-                _ => self.peers_trees_task = task,
-            };
-        }
-    }
 }
 
 pub struct Router {
     whatami: WhatAmI,
     pub tables: Arc<RwLock<Tables>>,
+    tree_computation: Option<TreeComputation>,
 }
 
 impl Router {
@@ -258,14 +221,18 @@ impl Router {
         hlc: Option<Arc<HLC>>,
         queries_default_timeout: Duration,
     ) -> Self {
+        let tables = Arc::new(RwLock::new(Tables::new(
+            pid,
+            whatami,
+            hlc,
+            queries_default_timeout,
+        )));
+        let tree_computation = TreeComputation::new(tables.clone());
+
         Router {
             whatami,
-            tables: Arc::new(RwLock::new(Tables::new(
-                pid,
-                whatami,
-                hlc,
-                queries_default_timeout,
-            ))),
+            tables,
+            tree_computation: Some(tree_computation),
         }
     }
 
@@ -313,7 +280,7 @@ impl Router {
     }
 
     pub fn new_transport_unicast(
-        &self,
+        self: Arc<Self>,
         transport: TransportUnicast,
     ) -> ZResult<Arc<LinkStateInterceptor>> {
         let mut tables = zwrite!(self.tables);
@@ -344,7 +311,7 @@ impl Router {
 
         let handler = Arc::new(LinkStateInterceptor::new(
             transport.clone(),
-            self.tables.clone(),
+            self.clone(),
             Face {
                 tables: self.tables.clone(),
                 state: tables
@@ -361,31 +328,132 @@ impl Router {
 
         match (self.whatami, whatami) {
             (WhatAmI::Router, WhatAmI::Router) => {
-                tables.schedule_compute_trees(self.tables.clone(), WhatAmI::Router);
+                self.schedule_compute_trees(WhatAmI::Router);
             }
             (WhatAmI::Router, WhatAmI::Peer)
             | (WhatAmI::Peer, WhatAmI::Router)
             | (WhatAmI::Peer, WhatAmI::Peer) => {
-                tables.schedule_compute_trees(self.tables.clone(), WhatAmI::Peer);
+                self.schedule_compute_trees(WhatAmI::Peer);
             }
             _ => (),
         }
         Ok(handler)
     }
+
+    pub fn schedule_compute_trees(&self, net_type: WhatAmI) {
+        self.tree_computation
+            .as_ref()
+            .unwrap()
+            .schedule_compute_trees(net_type);
+    }
+}
+
+impl Drop for Router {
+    fn drop(&mut self) {
+        self.tree_computation.take().unwrap().close();
+    }
+}
+
+struct TreeComputation {
+    pub router_task: JoinHandle<()>,
+    pub peer_task: JoinHandle<()>,
+    pub router_req_tx: SyncSender<()>,
+    pub peer_req_tx: SyncSender<()>,
+}
+
+impl TreeComputation {
+    fn new(tables: Arc<RwLock<Tables>>) -> Self {
+        let (router_req_tx, router_req_rx) = sync_channel(1);
+        let (peer_req_tx, peer_req_rx) = sync_channel(1);
+
+        let router_task = {
+            let tables = tables.clone();
+
+            thread::spawn(move || {
+                Self::compute_router_trees(tables, router_req_rx);
+            })
+        };
+        let peer_task = thread::spawn(move || {
+            Self::compute_peer_trees(tables, peer_req_rx);
+        });
+
+        Self {
+            router_task,
+            peer_task,
+            router_req_tx,
+            peer_req_tx,
+        }
+    }
+
+    fn schedule_compute_trees(&self, net_type: WhatAmI) {
+        match net_type {
+            WhatAmI::Router => {
+                let _ = self.router_req_tx.try_send(());
+            }
+            WhatAmI::Peer => {
+                let _ = self.peer_req_tx.try_send(());
+            }
+            WhatAmI::Client => unreachable!(),
+        }
+    }
+
+    fn close(self) {
+        let Self {
+            router_task,
+            peer_task,
+            router_req_tx: _,
+            peer_req_tx: _,
+        } = self;
+
+        let _ = router_task.join();
+        let _ = peer_task.join();
+    }
+
+    fn compute_router_trees(tables_ref: Arc<RwLock<Tables>>, rx: Receiver<()>) {
+        while let Ok(()) = rx.recv() {
+            let mut tables = zwrite!(tables_ref);
+
+            log::trace!("Compute trees");
+            let new_childs = tables.routers_net.as_mut().unwrap().compute_trees();
+
+            log::trace!("Compute routes");
+            pubsub_tree_change(&mut tables, &new_childs, WhatAmI::Router);
+            queries_tree_change(&mut tables, &new_childs, WhatAmI::Router);
+
+            log::trace!("Computations completed");
+            thread::sleep(Duration::from_millis(*TREES_COMPUTATION_DELAY));
+        }
+    }
+
+    fn compute_peer_trees(tables_ref: Arc<RwLock<Tables>>, rx: Receiver<()>) {
+        while let Ok(()) = rx.recv() {
+            let mut tables = zwrite!(tables_ref);
+
+            log::trace!("Compute trees");
+            let new_childs = tables.peers_net.as_mut().unwrap().compute_trees();
+
+            log::trace!("Compute routes");
+            pubsub_tree_change(&mut tables, &new_childs, WhatAmI::Peer);
+            queries_tree_change(&mut tables, &new_childs, WhatAmI::Peer);
+
+            log::trace!("Computations completed");
+            thread::sleep(Duration::from_millis(*TREES_COMPUTATION_DELAY));
+        }
+    }
 }
 
 pub struct LinkStateInterceptor {
     pub(crate) transport: TransportUnicast,
-    pub(crate) tables: Arc<RwLock<Tables>>,
+    pub(crate) router: Arc<Router>,
     pub(crate) face: Face,
     pub(crate) demux: DeMux<Face>,
 }
 
 impl LinkStateInterceptor {
-    fn new(transport: TransportUnicast, tables: Arc<RwLock<Tables>>, face: Face) -> Self {
+    fn new(transport: TransportUnicast, router: Arc<Router>, face: Face) -> Self {
         LinkStateInterceptor {
             transport,
-            tables,
+            router,
             face: face.clone(),
             demux: DeMux::new(face),
         }
@@ -398,7 +466,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
         match msg.body {
             ZenohBody::LinkStateList(list) => {
                 if let Ok(pid) = self.transport.get_pid() {
-                    let mut tables = zwrite!(self.tables);
+                    let mut tables = zwrite!(self.router.tables);
                     let whatami = self.transport.get_whatami()?;
                     match (tables.whatami, whatami) {
                         (WhatAmI::Router, WhatAmI::Router) => {
@@ -421,7 +489,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
                                 tables.peers_net.as_ref().unwrap(),
                             );
 
-                            tables.schedule_compute_trees(self.tables.clone(), WhatAmI::Router);
+                            self.router.schedule_compute_trees(WhatAmI::Router);
                         }
                         (WhatAmI::Router, WhatAmI::Peer)
                         | (WhatAmI::Peer, WhatAmI::Router)
@@ -443,7 +511,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
                                 );
                             }
 
-                            tables.schedule_compute_trees(self.tables.clone(), WhatAmI::Peer);
+                            self.router.schedule_compute_trees(WhatAmI::Peer);
                         }
                         _ => (),
                     };
@@ -461,7 +529,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
 
     fn closing(&self) {
         self.demux.closing();
-        let tables_ref = self.tables.clone();
+        let tables_ref = self.router.tables.clone();
         match (self.transport.get_pid(), self.transport.get_whatami()) {
             (Ok(pid), Ok(whatami)) => {
                 let mut tables = zwrite!(tables_ref);
@@ -479,7 +547,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
                             tables.peers_net.as_ref().unwrap(),
                         );
 
-                        tables.schedule_compute_trees(tables_ref.clone(), WhatAmI::Router);
+                        self.router.schedule_compute_trees(WhatAmI::Router);
                     }
                     (WhatAmI::Router, WhatAmI::Peer)
                     | (WhatAmI::Peer, WhatAmI::Router)
@@ -498,7 +566,7 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
                             );
                         }
 
-                        tables.schedule_compute_trees(tables_ref.clone(), WhatAmI::Peer);
+                        self.router.schedule_compute_trees(WhatAmI::Peer);
                     }
                     _ => (),
                 };
