@@ -17,6 +17,8 @@ pub use super::pubsub::*;
 pub use super::queries::*;
 pub use super::resource::*;
 use super::runtime::Runtime;
+use async_std::task::spawn_blocking;
+use futures::{join, StreamExt};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -26,10 +28,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uhlc::HLC;
 use zenoh_link::Link;
-use zenoh_protocol::proto::{ZenohBody, ZenohMessage};
+use zenoh_protocol::proto::{LinkState, LinkStateList, ZenohBody, ZenohMessage};
 use zenoh_protocol_core::{PeerId, WhatAmI, ZInt};
 use zenoh_transport::{DeMux, Mux, Primitives, TransportPeerEventHandler, TransportUnicast};
 // use zenoh_collections::Timer;
+use itertools::Itertools as _;
 use zenoh_core::zconfigurable;
 use zenoh_core::Result as ZResult;
 use zenoh_sync::get_mut_unchecked;
@@ -346,6 +349,13 @@ impl Router {
             .unwrap()
             .schedule_compute_trees(net_type);
     }
+
+    pub fn schedule_link_state_update(&self, list: LinkStateList, pid: PeerId, whatami: WhatAmI) {
+        self.tree_computation
+            .as_ref()
+            .unwrap()
+            .schedule_link_state_update(list, pid, whatami);
+    }
 }
 
 impl Drop for Router {
@@ -355,17 +365,30 @@ impl Drop for Router {
 }
 
 struct TreeComputation {
+    pub link_state_task: async_std::task::JoinHandle<()>,
     pub router_task: JoinHandle<()>,
     pub peer_task: JoinHandle<()>,
+    pub link_state_msg_tx: flume::Sender<LinkStateUpdateRequest>,
     pub router_req_tx: SyncSender<()>,
     pub peer_req_tx: SyncSender<()>,
 }
 
 impl TreeComputation {
     fn new(tables: Arc<RwLock<Tables>>) -> Self {
+        let (link_state_msg_tx, link_state_msg_rx) = flume::bounded(16);
         let (router_req_tx, router_req_rx) = sync_channel(1);
         let (peer_req_tx, peer_req_rx) = sync_channel(1);
 
+        let link_state_task = {
+            let tables = tables.clone();
+            let router_req_tx = router_req_tx.clone();
+            let peer_req_tx = peer_req_tx.clone();
+
+            async_std::task::spawn(async move {
+                Self::update_link_state(tables, link_state_msg_rx, router_req_tx, peer_req_tx)
+                    .await;
+            })
+        };
         let router_task = {
             let tables = tables.clone();
 
@@ -382,6 +405,8 @@ impl TreeComputation {
             peer_task,
             router_req_tx,
             peer_req_tx,
+            link_state_task,
+            link_state_msg_tx,
         }
     }
 
@@ -397,16 +422,128 @@ impl TreeComputation {
         }
     }
 
+    fn schedule_link_state_update(&self, list: LinkStateList, pid: PeerId, whatami: WhatAmI) {
+        let req = LinkStateUpdateRequest {
+            list: list.link_states,
+            pid,
+            whatami,
+        };
+        let _ = self.link_state_msg_tx.send(req);
+    }
+
     fn close(self) {
         let Self {
             router_task,
             peer_task,
+            link_state_task,
             router_req_tx: _,
             peer_req_tx: _,
+            link_state_msg_tx: _,
         } = self;
 
+        let _ = async_std::task::block_on(link_state_task);
         let _ = router_task.join();
         let _ = peer_task.join();
+    }
+
+    async fn update_link_state(
+        tables_ref: Arc<RwLock<Tables>>,
+        input_rx: flume::Receiver<LinkStateUpdateRequest>,
+        router_req_tx: SyncSender<()>,
+        peer_req_tx: SyncSender<()>,
+    ) {
+        use WhatAmI::*;
+
+        let (batch_tx, batch_rx) = flume::bounded(16);
+
+        let batcher = async move {
+            'outer: loop {
+                let orig_reqs: Vec<_> = input_rx
+                    .stream()
+                    .take_until(async move {
+                        async_std::task::sleep(Duration::from_millis(100)).await;
+                    })
+                    .collect()
+                    .await;
+
+                let merged_reqs = orig_reqs
+                    .into_iter()
+                    .map(|req| {
+                        let LinkStateUpdateRequest { list, pid, whatami } = req;
+                        ((pid, whatami), list)
+                    })
+                    .into_group_map()
+                    .into_iter()
+                    .map(|((pid, whatami), lists)| {
+                        let states = lists.into_iter().flatten();
+                        let states = merge_link_state_list(states);
+
+                        LinkStateUpdateRequest {
+                            list: states,
+                            pid,
+                            whatami,
+                        }
+                    });
+
+                for req in merged_reqs {
+                    let ok = batch_tx.send_async(req).await.is_ok();
+                    if !ok {
+                        break 'outer;
+                    }
+                }
+            }
+        };
+
+        let updater = spawn_blocking(move || {
+            for req in batch_rx.into_iter() {
+                let LinkStateUpdateRequest { list, pid, whatami } = req;
+
+                let mut tables = zwrite!(tables_ref);
+                match (tables.whatami, whatami) {
+                    (Router, Router) => {
+                        let removed_nodes =
+                            tables.routers_net.as_mut().unwrap().link_states(list, pid);
+
+                        for (_, removed_node) in removed_nodes {
+                            pubsub_remove_node(&mut tables, &removed_node.pid, Router);
+                            queries_remove_node(&mut tables, &removed_node.pid, Router);
+                        }
+
+                        tables.shared_nodes = shared_nodes(
+                            tables.routers_net.as_ref().unwrap(),
+                            tables.peers_net.as_ref().unwrap(),
+                        );
+
+                        if router_req_tx.try_send(()).is_err() {
+                            break;
+                        }
+                    }
+                    (Router, Peer) | (Peer, Router | Peer) => {
+                        let removed_nodes =
+                            tables.peers_net.as_mut().unwrap().link_states(list, pid);
+
+                        for (_, removed_node) in removed_nodes {
+                            pubsub_remove_node(&mut tables, &removed_node.pid, Peer);
+                            queries_remove_node(&mut tables, &removed_node.pid, Peer);
+                        }
+
+                        if tables.whatami == Router {
+                            tables.shared_nodes = shared_nodes(
+                                tables.routers_net.as_ref().unwrap(),
+                                tables.peers_net.as_ref().unwrap(),
+                            );
+                        }
+
+                        if peer_req_tx.try_send(()).is_err() {
+                            break;
+                        }
+                    }
+                    _ => (),
+                };
+            }
+        });
+
+        join!(batcher, updater);
     }
 
     fn compute_router_trees(tables_ref: Arc<RwLock<Tables>>, rx: Receiver<()>) {
@@ -442,6 +579,12 @@ impl TreeComputation {
     }
 }
 
+struct LinkStateUpdateRequest {
+    pub list: Vec<LinkState>,
+    pub pid: PeerId,
+    pub whatami: WhatAmI,
+}
+
 pub struct LinkStateInterceptor {
     pub(crate) transport: TransportUnicast,
     pub(crate) router: Arc<Router>,
@@ -465,58 +608,9 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
         log::trace!("Recv {:?}", msg);
         match msg.body {
             ZenohBody::LinkStateList(list) => {
-                if let Ok(pid) = self.transport.get_pid() {
-                    let mut tables = zwrite!(self.router.tables);
-                    let whatami = self.transport.get_whatami()?;
-                    match (tables.whatami, whatami) {
-                        (WhatAmI::Router, WhatAmI::Router) => {
-                            for (_, removed_node) in tables
-                                .routers_net
-                                .as_mut()
-                                .unwrap()
-                                .link_states(list.link_states, pid)
-                            {
-                                pubsub_remove_node(&mut tables, &removed_node.pid, WhatAmI::Router);
-                                queries_remove_node(
-                                    &mut tables,
-                                    &removed_node.pid,
-                                    WhatAmI::Router,
-                                );
-                            }
-
-                            tables.shared_nodes = shared_nodes(
-                                tables.routers_net.as_ref().unwrap(),
-                                tables.peers_net.as_ref().unwrap(),
-                            );
-
-                            self.router.schedule_compute_trees(WhatAmI::Router);
-                        }
-                        (WhatAmI::Router, WhatAmI::Peer)
-                        | (WhatAmI::Peer, WhatAmI::Router)
-                        | (WhatAmI::Peer, WhatAmI::Peer) => {
-                            for (_, removed_node) in tables
-                                .peers_net
-                                .as_mut()
-                                .unwrap()
-                                .link_states(list.link_states, pid)
-                            {
-                                pubsub_remove_node(&mut tables, &removed_node.pid, WhatAmI::Peer);
-                                queries_remove_node(&mut tables, &removed_node.pid, WhatAmI::Peer);
-                            }
-
-                            if tables.whatami == WhatAmI::Router {
-                                tables.shared_nodes = shared_nodes(
-                                    tables.routers_net.as_ref().unwrap(),
-                                    tables.peers_net.as_ref().unwrap(),
-                                );
-                            }
-
-                            self.router.schedule_compute_trees(WhatAmI::Peer);
-                        }
-                        _ => (),
-                    };
-                }
-
+                let pid = self.transport.get_pid()?;
+                let whatami = self.transport.get_whatami()?;
+                self.router.schedule_link_state_update(list, pid, whatami);
                 Ok(())
             }
             _ => self.demux.handle_message(msg),
@@ -580,4 +674,40 @@ impl TransportPeerEventHandler for LinkStateInterceptor {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+fn merge_link_state_list<I>(list: I) -> Vec<LinkState>
+where
+    I: IntoIterator<Item = LinkState>,
+{
+    use itertools::MinMaxResult;
+
+    list.into_iter()
+        .into_group_map_by(|state| state.psid)
+        .into_iter()
+        .map(|(psid, group)| {
+            let pid = group.iter().find_map(|state| state.pid);
+            let whatami = group.iter().find_map(|state| state.whatami);
+            let locators = group
+                .iter()
+                .find_map(|state| state.locators.as_ref())
+                .cloned();
+            let newest_state = match group.iter().minmax_by_key(|state| state.sn) {
+                MinMaxResult::NoElements => unreachable!(),
+                MinMaxResult::OneElement(state) => state,
+                MinMaxResult::MinMax(_, state) => state,
+            };
+            let sn = newest_state.sn;
+            let links = newest_state.links.clone();
+
+            LinkState {
+                psid,
+                sn,
+                pid,
+                whatami,
+                locators,
+                links,
+            }
+        })
+        .collect()
 }

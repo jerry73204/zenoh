@@ -33,7 +33,7 @@ pub type NonZeroZInt = NonZeroU64;
 pub const ZINT_MAX_BYTES: usize = 10;
 
 // WhatAmI values
-pub type WhatAmI = whatami::WhatAmI;
+pub use whatami::WhatAmI;
 
 /// Constants and helpers for zenoh `whatami` flags.
 pub mod whatami;
