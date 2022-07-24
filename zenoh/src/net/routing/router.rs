@@ -17,7 +17,7 @@ pub use super::pubsub::*;
 pub use super::queries::*;
 pub use super::resource::*;
 use super::runtime::Runtime;
-use super::worker::{AddLink, LinkStateUpdate, RemoveLink, UpdateRequest, UpdateTask};
+use super::worker::{AddLink, LinkStateUpdate, RemoveLink, UpdateTask};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
@@ -206,7 +206,7 @@ impl Tables {
 
 pub struct Router {
     pub tables: Arc<RwLock<Tables>>,
-    update_task: Option<UpdateTask>,
+    task: Option<UpdateTask>,
 }
 
 impl Router {
@@ -222,11 +222,11 @@ impl Router {
             hlc,
             queries_default_timeout,
         )));
-        let update_task = UpdateTask::new(tables.clone());
+        let task = UpdateTask::new(tables.clone());
 
         Router {
             tables,
-            update_task: Some(update_task),
+            task: Some(task),
         }
     }
 
@@ -278,11 +278,11 @@ impl Router {
         transport: TransportUnicast,
     ) -> ZResult<Arc<LinkStateInterceptor>> {
         let whatami = transport.get_whatami()?;
-        let link_id = self.request_add_link(transport.clone());
+        let link_id = self.request_add_link(transport.clone()).expect("TODO");
 
-        let state = {
+        let face = {
             let mut tables = zwrite!(self.tables);
-            tables
+            let state = tables
                 .open_net_face(
                     transport.get_pid().unwrap(),
                     whatami,
@@ -290,56 +290,61 @@ impl Router {
                     link_id,
                 )
                 .upgrade()
-                .unwrap()
-        };
-        let handler = Arc::new(LinkStateInterceptor::new(
-            transport,
-            self.clone(),
+                .unwrap();
             Face {
                 tables: self.tables.clone(),
                 state,
-            },
-        ));
+            }
+        };
+        let handler = Arc::new(LinkStateInterceptor::new(transport, self, face));
 
         Ok(handler)
     }
 
-    fn request_update<I>(&self, req: I) -> bool
-    where
-        I: Into<UpdateRequest>,
-    {
-        self.update_task.as_ref().unwrap().push(req)
-    }
-
-    fn request_link_state_update(&self, list: LinkStateList, pid: PeerId, whatami: WhatAmI) {
-        self.request_update(LinkStateUpdate {
+    fn request_link_state_update(
+        &self,
+        list: LinkStateList,
+        pid: PeerId,
+        whatami: WhatAmI,
+    ) -> bool {
+        let req = LinkStateUpdate {
             list: list.link_states,
             pid,
             whatami,
-        });
+        };
+        self.task().push(req)
     }
 
-    fn request_remove_link(&self, transport: TransportUnicast) {
-        self.request_update(RemoveLink { transport });
+    fn request_remove_link(&self, transport: TransportUnicast) -> bool {
+        let req = RemoveLink { transport };
+        self.task().push(req)
     }
 
-    fn request_add_link(&self, transport: TransportUnicast) -> usize {
+    fn request_add_link(&self, transport: TransportUnicast) -> Option<usize> {
         let (link_id_tx, link_id_rx) = flume::bounded(1);
-        self.request_update(AddLink {
+        let req = AddLink {
             transport,
             link_id_tx,
-        });
+        };
+        let ok = self.task().push(req);
+        if !ok {
+            return None;
+        }
 
         match link_id_rx.recv() {
-            Ok(link_id) => link_id,
+            Ok(link_id) => Some(link_id),
             Err(_) => unreachable!("internal error"),
         }
+    }
+
+    fn task(&self) -> &UpdateTask {
+        self.task.as_ref().unwrap()
     }
 }
 
 impl Drop for Router {
     fn drop(&mut self) {
-        self.update_task.take().unwrap().join();
+        self.task.take().unwrap().join();
     }
 }
 

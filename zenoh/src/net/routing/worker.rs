@@ -12,6 +12,8 @@
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
 use super::network::shared_nodes;
+use super::network::SendOnLink;
+use super::network::SendOnLinks;
 pub use super::pubsub::*;
 pub use super::queries::*;
 pub use super::resource::*;
@@ -138,98 +140,118 @@ impl UpdateTask {
         let mut compute_router_trees = false;
         let mut compute_peer_trees = false;
 
-        add_links.into_iter().for_each(|req| {
-            let AddLink {
-                transport,
-                link_id_tx,
-            } = req;
-            let whatami = match transport.get_whatami() {
-                Ok(whatami) => whatami,
-                Err(_) => {
-                    log::error!("Closed transport in session closing!");
-                    return;
-                }
-            };
-
-            let link_id = match (tables.whatami, whatami) {
-                (Router, Router) => {
-                    compute_router_trees = true;
-                    tables.routers_net.as_mut().unwrap().add_link(transport)
-                }
-                (Router, Peer) | (Peer, Router | Peer) => {
-                    compute_peer_trees = true;
-                    tables.peers_net.as_mut().unwrap().add_link(transport)
-                }
-                _ => return,
-            };
-
-            let _ = link_id_tx.send(link_id);
-        });
-
-        remove_links.into_iter().for_each(|req| {
-            let RemoveLink { transport } = req;
-            let pid = transport.get_pid();
-            let whatami = transport.get_whatami();
-
-            let (pid, whatami) = match (pid, whatami) {
-                (Ok(pid), Ok(whatami)) => (pid, whatami),
-                _ => {
-                    log::error!("Closed transport in session closing!");
-                    return;
-                }
-            };
-
-            match (tables.whatami, whatami) {
-                (Router, Router) => {
-                    let removed_nodes = tables.routers_net.as_mut().unwrap().remove_link(&pid);
-
-                    for (_, removed_node) in removed_nodes {
-                        pubsub_remove_node(tables, &removed_node.pid, Router);
-                        queries_remove_node(tables, &removed_node.pid, Router);
+        let add_link_outputs: Vec<_> = add_links
+            .into_iter()
+            .filter_map(|req| {
+                let AddLink {
+                    transport,
+                    link_id_tx,
+                } = req;
+                let whatami = match transport.get_whatami() {
+                    Ok(whatami) => whatami,
+                    Err(_) => {
+                        log::error!("Closed transport in session closing!");
+                        return None;
                     }
+                };
 
-                    compute_router_trees = true;
-                }
-                (Router, Peer) | (Peer, Router | Peer) => {
-                    let removed_nodes = tables.peers_net.as_mut().unwrap().remove_link(&pid);
-
-                    for (_, removed_node) in removed_nodes {
-                        pubsub_remove_node(tables, &removed_node.pid, Peer);
-                        queries_remove_node(tables, &removed_node.pid, Peer);
+                let (link_id, output) = match (tables.whatami, whatami) {
+                    (Router, Router) => {
+                        compute_router_trees = true;
+                        let output = tables.routers_net.as_mut().unwrap().add_link(transport);
+                        (output.link_id, Some((output, Router)))
                     }
-
-                    compute_peer_trees = true;
-                }
-                _ => (),
-            };
-        });
-
-        link_state_updates.into_iter().for_each(|req| {
-            let LinkStateUpdate { list, pid, whatami } = req;
-
-            match (tables.whatami, whatami) {
-                (Router, Router) => {
-                    let removed_nodes = tables.routers_net.as_mut().unwrap().link_states(list, pid);
-
-                    for (_, removed_node) in removed_nodes {
-                        pubsub_remove_node(tables, &removed_node.pid, Router);
-                        queries_remove_node(tables, &removed_node.pid, Router);
+                    (Router, Peer) | (Peer, Router | Peer) => {
+                        compute_peer_trees = true;
+                        let output = tables.peers_net.as_mut().unwrap().add_link(transport);
+                        (output.link_id, Some((output, Peer)))
                     }
+                    (Client, _) | (_, Client) => (0, None),
+                };
+                let _ = link_id_tx.send(link_id);
 
-                    compute_router_trees = true;
-                }
-                (Router, Peer) | (Peer, Router | Peer) => {
-                    let removed_nodes = tables.peers_net.as_mut().unwrap().link_states(list, pid);
+                output
+            })
+            .collect();
 
-                    for (_, removed_node) in removed_nodes {
-                        pubsub_remove_node(tables, &removed_node.pid, Peer);
-                        queries_remove_node(tables, &removed_node.pid, Peer);
+        let remove_link_outputs: Vec<_> = remove_links
+            .into_iter()
+            .filter_map(|req| {
+                let RemoveLink { transport } = req;
+                let pid = transport.get_pid();
+                let whatami = transport.get_whatami();
+
+                let (pid, whatami) = match (pid, whatami) {
+                    (Ok(pid), Ok(whatami)) => (pid, whatami),
+                    _ => {
+                        log::error!("Closed transport in session closing!");
+                        return None;
                     }
+                };
 
-                    compute_peer_trees = true;
+                match (tables.whatami, whatami) {
+                    (Router, Router) => {
+                        compute_router_trees = true;
+                        let removed_nodes = tables.routers_net.as_mut().unwrap().remove_link(&pid);
+                        Some((removed_nodes, Router))
+                    }
+                    (Router, Peer) | (Peer, Router | Peer) => {
+                        compute_peer_trees = true;
+                        let removed_nodes = tables.peers_net.as_mut().unwrap().remove_link(&pid);
+                        Some((removed_nodes, Peer))
+                    }
+                    (Client, _) | (_, Client) => None,
                 }
-                _ => (),
-            }
+            })
+            .collect();
+
+        let link_state_outputs: Vec<_> = link_state_updates
+            .into_iter()
+            .filter_map(|req| {
+                let LinkStateUpdate { list, pid, whatami } = req;
+
+                match (tables.whatami, whatami) {
+                    (Router, Router) => {
+                        compute_router_trees = true;
+                        let output = tables.routers_net.as_mut().unwrap().link_states(list, pid);
+                        Some((output, Router))
+                    }
+                    (Router, Peer) | (Peer, Router | Peer) => {
+                        compute_peer_trees = true;
+                        let output = tables.peers_net.as_mut().unwrap().link_states(list, pid);
+                        Some((output, Peer))
+                    }
+                    (Client, _) | (_, Client) => None,
+                }
+            })
+            .collect();
+
+        let send_on_link_iter = {
+            let iter1 = add_link_outputs
+                .iter()
+                .map(|(out, kind)| (&out.send_on_link, *kind));
+            let iter2 = link_state_outputs
+                .iter()
+                .flat_map(|(out, kind)| out.send_on_link.iter().map(move |arg| (arg, *kind)));
+            iter1.chain(iter2)
+        };
+        let send_on_links_iter = add_link_outputs
+            .iter()
+            .map(|(out, kind)| (&out.send_on_links, kind));
+
+        let removed_nodes = {
+            let iter1 = remove_link_outputs.iter().map(|(out, kind)| (out, *kind));
+            let iter2 = link_state_outputs
+                .iter()
+                .map(|(out, kind)| (&out.removed_nodes, *kind));
+            iter1
+                .chain(iter2)
+                .flat_map(|(nodes, kind)| nodes.iter().map(move |(_node_idx, node)| (node, kind)))
+        };
+
+        removed_nodes.for_each(|(node, kind)| {
+            pubsub_remove_node(tables, &node.pid, kind);
+            queries_remove_node(tables, &node.pid, kind);
         });
 
         // update shared nodes
@@ -239,6 +261,31 @@ impl UpdateTask {
                 tables.peers_net.as_ref().unwrap(),
             );
         }
+
+        send_on_link_iter.for_each(|(arg, kind)| {
+            let SendOnLink { links, transport } = arg;
+
+            let net = match kind {
+                Router => tables.routers_net.as_ref().unwrap(),
+                Peer => tables.peers_net.as_ref().unwrap(),
+                Client => unreachable!(),
+            };
+            net.send_on_link(links.to_vec(), transport);
+        });
+
+        send_on_links_iter.for_each(|(arg, kind)| {
+            let SendOnLinks {
+                ref links,
+                excluded_pid,
+            } = *arg;
+
+            let net = match kind {
+                Router => tables.routers_net.as_ref().unwrap(),
+                Peer => tables.peers_net.as_ref().unwrap(),
+                Client => unreachable!(),
+            };
+            net.send_on_links(links.to_vec(), |link| link.pid != excluded_pid);
+        });
 
         if compute_router_trees {
             Self::compute_router_trees(tables);
@@ -329,7 +376,7 @@ fn merge_link_state_list<I>(list: I) -> Vec<LinkState>
 where
     I: IntoIterator<Item = LinkState>,
 {
-    use itertools::MinMaxResult;
+    use itertools::MinMaxResult as R;
 
     list.into_iter()
         .into_group_map_by(|state| state.psid)
@@ -342,9 +389,9 @@ where
                 .find_map(|state| state.locators.as_ref())
                 .cloned();
             let newest_state = match group.iter().minmax_by_key(|state| state.sn) {
-                MinMaxResult::NoElements => unreachable!(),
-                MinMaxResult::OneElement(state) => state,
-                MinMaxResult::MinMax(_, state) => state,
+                R::NoElements => unreachable!(),
+                R::OneElement(state) => state,
+                R::MinMax(_, state) => state,
             };
             let sn = newest_state.sn;
             let links = newest_state.links.clone();

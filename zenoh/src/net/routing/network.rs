@@ -37,7 +37,7 @@ impl std::fmt::Debug for Node {
 
 pub(crate) struct Link {
     pub(crate) transport: TransportUnicast,
-    pid: PeerId,
+    pub(crate) pid: PeerId,
     mappings: VecMap<PeerId>,
     local_mappings: VecMap<ZInt>,
 }
@@ -233,7 +233,7 @@ impl Network {
         ZenohMessage::make_link_state_list(list, None)
     }
 
-    fn send_on_link(&self, idxs: Vec<(NodeIndex, bool)>, transport: &TransportUnicast) {
+    pub fn send_on_link(&self, idxs: Vec<(NodeIndex, bool)>, transport: &TransportUnicast) {
         let msg = self.make_msg(idxs);
         log::trace!("{} Send to {:?} {:?}", self.name, transport.get_pid(), msg);
         if let Err(e) = transport.handle_message(msg) {
@@ -241,7 +241,7 @@ impl Network {
         }
     }
 
-    fn send_on_links<P>(&self, idxs: Vec<(NodeIndex, bool)>, mut value_selector: P)
+    pub fn send_on_links<P>(&self, idxs: Vec<(NodeIndex, bool)>, mut value_selector: P)
     where
         P: FnMut(&Link) -> bool,
     {
@@ -274,7 +274,7 @@ impl Network {
         &mut self,
         link_states: Vec<LinkState>,
         src: PeerId,
-    ) -> Vec<(NodeIndex, Node)> {
+    ) -> LinkStatesOutput {
         log::trace!("{} Received from {} raw: {:?}", self.name, src, link_states);
 
         let graph = &self.graph;
@@ -288,7 +288,10 @@ impl Network {
                     self.name,
                     src
                 );
-                return vec![];
+                return LinkStatesOutput {
+                    removed_nodes: vec![],
+                    send_on_link: vec![],
+                };
             }
         };
 
@@ -494,6 +497,9 @@ impl Network {
         // Propagate link states
         // Note: we need to send all states at once for each face
         // to avoid premature node deletion on the other side
+
+        let mut send_on_link = vec![];
+
         #[allow(clippy::type_complexity)]
         if !link_states.is_empty() {
             let (new_idxs, updated_idxs): (
@@ -518,20 +524,27 @@ impl Network {
                         })
                         .collect();
                     if !new_idxs.is_empty() || !updated_idxs.is_empty() {
-                        self.send_on_link(
-                            [&new_idxs[..], &updated_idxs[..]].concat(),
-                            &link.transport,
-                        );
+                        send_on_link.push(SendOnLink {
+                            links: [&new_idxs[..], &updated_idxs[..]].concat(),
+                            transport: link.transport.clone(),
+                        });
                     }
                 } else if !new_idxs.is_empty() {
-                    self.send_on_link(new_idxs.clone(), &link.transport);
+                    send_on_link.push(SendOnLink {
+                        links: new_idxs.clone(),
+                        transport: link.transport.clone(),
+                    });
                 }
             }
         }
-        removed
+
+        LinkStatesOutput {
+            removed_nodes: removed,
+            send_on_link,
+        }
     }
 
-    pub(crate) fn add_link(&mut self, transport: TransportUnicast) -> usize {
+    pub(crate) fn add_link(&mut self, transport: TransportUnicast) -> AddNodeOutput {
         let free_index = {
             let mut i = 0;
             while self.links.contains_key(i) {
@@ -566,15 +579,28 @@ impl Network {
         self.graph[self.idx].links.push(pid);
         self.graph[self.idx].sn += 1;
 
-        if new {
-            self.send_on_links(vec![(idx, true), (self.idx, false)], |link| link.pid != pid);
+        let send_on_links = if new {
+            SendOnLinks {
+                links: vec![(idx, true), (self.idx, false)],
+                excluded_pid: pid,
+            }
         } else {
-            self.send_on_links(vec![(self.idx, false)], |link| link.pid != pid);
-        }
+            SendOnLinks {
+                links: vec![(self.idx, false)],
+                excluded_pid: pid,
+            }
+        };
 
-        let idxs = self.graph.node_indices().map(|i| (i, true)).collect();
-        self.send_on_link(idxs, &transport);
-        free_index
+        let send_on_link = {
+            let links: Vec<_> = self.graph.node_indices().map(|i| (i, true)).collect();
+            SendOnLink { links, transport }
+        };
+
+        AddNodeOutput {
+            link_id: free_index,
+            send_on_link,
+            send_on_links,
+        }
     }
 
     pub(crate) fn remove_link(&mut self, pid: &PeerId) -> Vec<(NodeIndex, Node)> {
@@ -756,4 +782,25 @@ pub(super) fn shared_nodes(net1: &Network, net2: &Network) -> Vec<PeerId> {
                 .then(|| node1.pid)
         })
         .collect()
+}
+
+pub(crate) struct AddNodeOutput {
+    pub link_id: usize,
+    pub send_on_link: SendOnLink,
+    pub send_on_links: SendOnLinks,
+}
+
+pub(crate) struct LinkStatesOutput {
+    pub removed_nodes: Vec<(NodeIndex, Node)>,
+    pub send_on_link: Vec<SendOnLink>,
+}
+
+pub struct SendOnLinks {
+    pub links: Vec<(NodeIndex, bool)>,
+    pub excluded_pid: PeerId,
+}
+
+pub struct SendOnLink {
+    pub links: Vec<(NodeIndex, bool)>,
+    pub transport: TransportUnicast,
 }
