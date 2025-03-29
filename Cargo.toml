@@ -93,7 +93,7 @@ const_format = "0.2.33"
 crc = "3.2.1"
 criterion = "0.5"
 crossbeam-utils = "0.8.20"
-derive_more = { version = "1.0.0", features = ["as_ref"] }
+derive_more = { version = "1.0.0", features = ["as_ref","debug"] }
 derive-new = "0.7.0"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 event-listener = "5.3.1"

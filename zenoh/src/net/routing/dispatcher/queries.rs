@@ -47,6 +47,9 @@ use super::{
 use crate::key_expr::KeyExpr;
 use crate::net::routing::hat::{HatTrait, SendDeclare};
 
+use derive_more::Debug;
+
+#[derive(Debug)]
 pub(crate) struct Query {
     src_face: Arc<FaceState>,
     src_qid: RequestId,
@@ -89,6 +92,7 @@ pub(crate) fn declare_queryable(
                 expr.suffix
             );
             let res = Resource::get_resource(&prefix, &expr.suffix);
+            // The first time "res" in None
             let (mut res, mut wtables) =
                 if res.as_ref().map(|r| r.context.is_some()).unwrap_or(false) {
                     drop(rtables);
@@ -106,6 +110,7 @@ pub(crate) fn declare_queryable(
                         Resource::make_resource(&mut wtables, &mut prefix, expr.suffix.as_ref());
                     matches.push(Arc::downgrade(&res));
                     Resource::match_resource(&wtables, &mut res, matches);
+                    // dbg!(res.as_ref()); the table is too large to print
                     (res, wtables)
                 };
 

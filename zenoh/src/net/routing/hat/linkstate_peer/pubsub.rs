@@ -674,6 +674,11 @@ pub(super) fn pubsub_tree_change(tables: &mut Tables, new_children: &[Vec<NodeIn
 
     // recompute routes
     update_data_routes_from(tables, &mut tables.root_res.clone());
+    println!("[linstate peer] Now the resource tree after 'pubsub tree change' will print");
+    // dbg!();
+    // dbg!(tables);
+    println!("[linstate peer] root_res tree {:#?}",tables.root_res);
+    // println!();
 }
 
 #[inline]
@@ -964,6 +969,7 @@ impl HatPubSubTrait for HatCode {
                 ),
             );
         }
+        // dbg!(&route);
         Arc::new(route)
     }
 
