@@ -42,6 +42,7 @@ where
             DeclareBody::UndeclareKeyExpr(r) => self.write(&mut *writer, r)?,
             DeclareBody::DeclareSubscriber(r) => self.write(&mut *writer, r)?,
             DeclareBody::UndeclareSubscriber(r) => self.write(&mut *writer, r)?,
+            DeclareBody::DeclarePreSubscriber(r) => self.write(&mut *writer, r)?,
             DeclareBody::DeclareQueryable(r) => self.write(&mut *writer, r)?,
             DeclareBody::UndeclareQueryable(r) => self.write(&mut *writer, r)?,
             DeclareBody::DeclareToken(r) => self.write(&mut *writer, r)?,
@@ -69,6 +70,7 @@ where
             U_KEYEXPR => DeclareBody::UndeclareKeyExpr(codec.read(&mut *reader)?),
             D_SUBSCRIBER => DeclareBody::DeclareSubscriber(codec.read(&mut *reader)?),
             U_SUBSCRIBER => DeclareBody::UndeclareSubscriber(codec.read(&mut *reader)?),
+            D_PRESUBSCRIBER => DeclareBody::DeclarePreSubscriber(codec.read(&mut *reader)?),
             D_QUERYABLE => DeclareBody::DeclareQueryable(codec.read(&mut *reader)?),
             U_QUERYABLE => DeclareBody::UndeclareQueryable(codec.read(&mut *reader)?),
             D_TOKEN => DeclareBody::DeclareToken(codec.read(&mut *reader)?),
@@ -537,6 +539,82 @@ where
         }
 
         Ok(subscriber::UndeclareSubscriber { id, ext_wire_expr })
+    }
+}
+
+// DeclarePreSubscriber
+impl<W> WCodec<&subscriber::DeclarePreSubscriber, &mut W> for Zenoh080
+where
+    W: Writer,
+{
+    type Output = Result<(), DidntWrite>;
+
+    fn write(self, writer: &mut W, x: &subscriber::DeclarePreSubscriber) -> Self::Output {
+        let subscriber::DeclarePreSubscriber { id, wire_expr } = x;
+
+        // Header
+        let mut header = declare::id::D_SUBSCRIBER;
+        if wire_expr.mapping != Mapping::DEFAULT {
+            header |= subscriber::flag::M;
+        }
+        if wire_expr.has_suffix() {
+            header |= subscriber::flag::N;
+        }
+        self.write(&mut *writer, header)?;
+
+        // Body
+        self.write(&mut *writer, id)?;
+        self.write(&mut *writer, wire_expr)?;
+
+        // Extensions
+
+        Ok(())
+    }
+}
+
+impl<R> RCodec<subscriber::DeclarePreSubscriber, &mut R> for Zenoh080
+where
+    R: Reader,
+{
+    type Error = DidntRead;
+
+    fn read(self, reader: &mut R) -> Result<subscriber::DeclarePreSubscriber, Self::Error> {
+        let header: u8 = self.read(&mut *reader)?;
+        let codec = Zenoh080Header::new(header);
+
+        codec.read(reader)
+    }
+}
+
+impl<R> RCodec<subscriber::DeclarePreSubscriber, &mut R> for Zenoh080Header
+where
+    R: Reader,
+{
+    type Error = DidntRead;
+
+    fn read(self, reader: &mut R) -> Result<subscriber::DeclarePreSubscriber, Self::Error> {
+        if imsg::mid(self.header) != declare::id::D_PRESUBSCRIBER {
+            return Err(DidntRead);
+        }
+
+        // Body
+        let id: subscriber::SubscriberId = self.codec.read(&mut *reader)?;
+        let ccond = Zenoh080Condition::new(imsg::has_flag(self.header, subscriber::flag::N));
+        let mut wire_expr: WireExpr<'static> = ccond.read(&mut *reader)?;
+        wire_expr.mapping = if imsg::has_flag(self.header, subscriber::flag::M) {
+            Mapping::Sender
+        } else {
+            Mapping::Receiver
+        };
+
+        // Extensions
+        let mut has_ext = imsg::has_flag(self.header, subscriber::flag::Z);
+        while has_ext {
+            let ext: u8 = self.codec.read(&mut *reader)?;
+            has_ext = extension::skip(reader, "DeclareSubscriber", ext)?;
+        }
+
+        Ok(subscriber::DeclarePreSubscriber { id, wire_expr })
     }
 }
 

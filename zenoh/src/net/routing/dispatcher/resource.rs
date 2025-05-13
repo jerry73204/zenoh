@@ -1072,6 +1072,7 @@ pub(crate) fn register_expr(
         .cloned()
     {
         // If get it(the scope is founded(?)), get the resource from remote_mapping with it's expr_id
+        // Since only one router will receive the DeclareKeyExpr
         Some(mut prefix) => match face.remote_mappings.get(&expr_id) {
             // get the resource from remote_mapping hashmap, if it's there,
             Some(res) => {
@@ -1090,7 +1091,7 @@ pub(crate) fn register_expr(
             }
             // If the expr_id is not in the remote_mapping row, 
             None => {
-                //Get the resource from the scope resource tree, find the Wire_expr's suffix resource
+                // Get the resource from the scope resource tree, find the Wire_expr's suffix resource
                 let res = Resource::get_resource(&prefix, &expr.suffix);
                 let (mut res, mut wtables) = if res
                     .as_ref()

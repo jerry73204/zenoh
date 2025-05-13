@@ -196,6 +196,9 @@ fn propagate_sourced_subscription(
     let net = hat!(tables).get_net(net_type).unwrap();
     match net.get_idx(source) {
         Some(tree_sid) => {
+            print!("propogate_source_subscription");
+            print!("This is net: {:#?}", &net);
+            print!("This is net trees: {:#?}",&net.trees[tree_sid.index()]);
             if net.trees.len() > tree_sid.index() {
                 send_sourced_subscription_to_net_children(
                     tables,

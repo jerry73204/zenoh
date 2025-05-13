@@ -1145,6 +1145,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.77",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -5079,7 +5080,9 @@ version = "1.1.0"
 dependencies = [
  "ahash",
  "async-trait",
+ "backtrace",
  "bytes",
+ "derive_more",
  "flume",
  "futures",
  "git-version",
@@ -5184,6 +5187,7 @@ dependencies = [
 name = "zenoh-core"
 version = "1.1.0"
 dependencies = [
+ "derive_more",
  "lazy_static",
  "tokio",
  "zenoh-result",
@@ -5604,6 +5608,7 @@ dependencies = [
 name = "zenoh-runtime"
 version = "1.1.0"
 dependencies = [
+ "derive_more",
  "lazy_static",
  "ron",
  "serde",

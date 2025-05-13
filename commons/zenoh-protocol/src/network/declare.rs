@@ -88,6 +88,8 @@ pub mod id {
     pub const U_TOKEN: u8 = 0x07;
 
     pub const D_FINAL: u8 = 0x1A;
+
+    pub const D_PRESUBSCRIBER: u8 = 0x08;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +98,7 @@ pub enum DeclareBody {
     UndeclareKeyExpr(UndeclareKeyExpr),
     DeclareSubscriber(DeclareSubscriber),
     UndeclareSubscriber(UndeclareSubscriber),
+    DeclarePreSubscriber(DeclarePreSubscriber),
     DeclareQueryable(DeclareQueryable),
     UndeclareQueryable(UndeclareQueryable),
     DeclareToken(DeclareToken),
@@ -354,6 +357,12 @@ pub mod subscriber {
 
             Self { id, wire_expr }
         }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct DeclarePreSubscriber {
+        pub id: SubscriberId,
+        pub wire_expr: WireExpr<'static>,
     }
 
     /// ```text

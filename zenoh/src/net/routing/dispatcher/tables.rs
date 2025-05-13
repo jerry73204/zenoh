@@ -67,6 +67,7 @@ impl<'a> RoutingExpr<'a> {
 pub struct Tables {
     pub(crate) zid: ZenohIdProto,
     pub(crate) whatami: WhatAmI,
+    #[debug(skip)]
     pub(crate) runtime: Option<WeakRuntime>,
     pub(crate) face_counter: usize,
     #[allow(dead_code)]

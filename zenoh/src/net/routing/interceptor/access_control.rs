@@ -420,6 +420,10 @@ impl InterceptorTrait for IngressAclEnforcer {
                 body: DeclareBody::UndeclareKeyExpr(_),
                 ..
             }) => {}
+            NetworkBody::Declare(Declare {
+                body: DeclareBody::DeclarePreSubscriber(_),
+                ..
+            }) => {}
             // Unfiltered remaining message types
             NetworkBody::Interest(_) | NetworkBody::OAM(_) | NetworkBody::ResponseFinal(_) => {}
         }
@@ -506,6 +510,10 @@ impl InterceptorTrait for EgressAclEnforcer {
                     return None;
                 }
             }
+            NetworkBody::Declare(Declare {
+                body: DeclareBody::DeclarePreSubscriber(_),
+                ..
+            }) => {}
             NetworkBody::Declare(Declare {
                 body: DeclareBody::DeclareQueryable(_),
                 ..
