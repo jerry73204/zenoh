@@ -21,10 +21,12 @@ pub use token::*;
 
 use crate::{
     common::{ZExtZ64, ZExtZBuf},
-    core::{ExprId, WireExpr},
+    core::{ExprId, WireExpr, ZenohIdProto},
     network::Mapping,
     zextz64, zextzbuf,
 };
+
+use std::time::Duration;
 
 pub mod flag {
     pub const I: u8 = 1 << 5; // 0x20 Interest      if I==1 then the declare is in a response to an Interest with future==false
@@ -312,6 +314,19 @@ pub mod subscriber {
     use crate::core::EntityId;
 
     pub type SubscriberId = EntityId;
+    pub type NodeId = u16;
+
+    /// HandoverSyncId represents the synchronization identifier between routers during handover
+    /// It contains information about the source router (before handover) and target router (after handover)
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct HandoverSyncId {
+        /// Router NodeId before handover
+        pub source_node_id: NodeId,
+        /// Router NodeId after handover
+        pub target_node_id: NodeId,
+        /// Unique sync sequence number for this handover
+        pub sync_seq: u32,
+    }
 
     pub mod flag {
         pub const N: u8 = 1 << 5; // 0x20 Named         if N==1 then the key expr has name/suffix
@@ -359,10 +374,50 @@ pub mod subscriber {
         }
     }
 
+
+    /// ```text
+    /// Flags:
+    /// - N: Named          If N==1 then the key expr has name/suffix
+    /// - M: Mapping        if M==1 then key expr mapping is the one declared by the sender, else it is the one declared by the receiver
+    /// - Z: Extension      If Z==1 then at least one extension is present
+    ///
+    /// 7 6 5 4 3 2 1 0
+    /// +-+-+-+-+-+-+-+-+
+    /// |Z|M|N|D_PRESUB |
+    /// +---------------+
+    /// ~src_node_id:z16~
+    /// +---------------+
+    /// ~tgt_node_id:z16~
+    /// +---------------+
+    /// ~ sync_seq:z32  ~
+    /// +---------------+
+    /// ~ key_scope:z16 ~
+    /// +---------------+
+    /// ~  key_suffix   ~  if N==1 -- <u8;z16>
+    /// +---------------+
+    /// ~ subscriber_id ~
+    /// +---------------+
+    /// ~ est_time:z64  ~
+    /// +---------------+
+    /// ~  [decl_exts]  ~  if Z==1
+    /// +---------------+
+    ///
+    /// Field details:
+    /// - src_node_id: Source router NodeId (before handover) using variable-length encoding (1-3 bytes for z16)
+    /// - tgt_node_id: Target router NodeId (after handover) using variable-length encoding (1-3 bytes for z16)
+    /// - sync_seq: Handover synchronization sequence number using variable-length encoding (1-5 bytes for z32)
+    /// - key_scope: Key expression scope using variable-length encoding (1-3 bytes for z16)
+    /// - key_suffix: Optional key suffix if N==1, format <u8;z16> where u8 is length prefix
+    /// - subscriber_id: ZenohIdProto - fixed 16 bytes representing the subscriber's Zenoh ID (vehicle client)
+    /// - est_time: Estimated time as Duration in milliseconds using variable-length encoding (1-9 bytes for z64)
+    /// - [decl_exts]: Optional extensions if Z==1
+    /// ```
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct DeclarePreSubscriber {
-        pub id: SubscriberId,
+        pub handover_sync_id: HandoverSyncId,
         pub wire_expr: WireExpr<'static>,
+        pub subscriber_identity: ZenohIdProto,
+        pub estimated_time: Duration
     }
 
     /// ```text

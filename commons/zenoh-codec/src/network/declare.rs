@@ -20,12 +20,14 @@ use zenoh_buffers::{
 };
 use zenoh_protocol::{
     common::{iext, imsg},
-    core::{ExprId, ExprLen, WireExpr},
+    core::{ExprId, ExprLen, WireExpr, ZenohIdProto},
     network::{
         declare::{self, common, keyexpr, queryable, subscriber, token, Declare, DeclareBody},
         id, Mapping,
     },
 };
+
+use std::time::Duration;
 
 use crate::{common::extension, RCodec, WCodec, Zenoh080, Zenoh080Condition, Zenoh080Header};
 
@@ -550,10 +552,10 @@ where
     type Output = Result<(), DidntWrite>;
 
     fn write(self, writer: &mut W, x: &subscriber::DeclarePreSubscriber) -> Self::Output {
-        let subscriber::DeclarePreSubscriber { id, wire_expr } = x;
+        let subscriber::DeclarePreSubscriber { handover_sync_id, wire_expr, subscriber_identity, estimated_time } = x;
 
         // Header
-        let mut header = declare::id::D_SUBSCRIBER;
+        let mut header = declare::id::D_PRESUBSCRIBER;
         if wire_expr.mapping != Mapping::DEFAULT {
             header |= subscriber::flag::M;
         }
@@ -563,8 +565,14 @@ where
         self.write(&mut *writer, header)?;
 
         // Body
-        self.write(&mut *writer, id)?;
+        // Write HandoverSyncId fields
+        self.write(&mut *writer, handover_sync_id.source_node_id)?;
+        self.write(&mut *writer, handover_sync_id.target_node_id)?;
+        self.write(&mut *writer, handover_sync_id.sync_seq)?;
+
         self.write(&mut *writer, wire_expr)?;
+        self.write(&mut *writer, subscriber_identity)?;
+        self.write(&mut *writer, estimated_time.as_millis() as u64)?;
 
         // Extensions
 
@@ -598,7 +606,16 @@ where
         }
 
         // Body
-        let id: subscriber::SubscriberId = self.codec.read(&mut *reader)?;
+        // Read HandoverSyncId fields
+        let source_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+        let target_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+        let sync_seq: u32 = self.codec.read(&mut *reader)?;
+        let handover_sync_id = subscriber::HandoverSyncId {
+            source_node_id,
+            target_node_id,
+            sync_seq,
+        };
+
         let ccond = Zenoh080Condition::new(imsg::has_flag(self.header, subscriber::flag::N));
         let mut wire_expr: WireExpr<'static> = ccond.read(&mut *reader)?;
         wire_expr.mapping = if imsg::has_flag(self.header, subscriber::flag::M) {
@@ -606,15 +623,18 @@ where
         } else {
             Mapping::Receiver
         };
+        let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
+        let millis: u64 = self.codec.read(&mut *reader)?;
+        let estimated_time = Duration::from_millis(millis);
 
         // Extensions
         let mut has_ext = imsg::has_flag(self.header, subscriber::flag::Z);
         while has_ext {
             let ext: u8 = self.codec.read(&mut *reader)?;
-            has_ext = extension::skip(reader, "DeclareSubscriber", ext)?;
+            has_ext = extension::skip(reader, "DeclarePreSubscriber", ext)?;
         }
 
-        Ok(subscriber::DeclarePreSubscriber { id, wire_expr })
+        Ok(subscriber::DeclarePreSubscriber { handover_sync_id, wire_expr, subscriber_identity, estimated_time })
     }
 }
 

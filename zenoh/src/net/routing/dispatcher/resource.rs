@@ -327,7 +327,7 @@ impl fmt::Debug for Resource {
 impl Resource{
 
     pub fn format_for_no_recursive(&self) -> String {
-        format!("Resource {{ suffix: {} }}", self.suffix)
+        format!("Resource {{ suffix: {}, full_expr: {}}}", self.suffix, self.expr())
     }
 
     pub fn format_excluding_matches(&self) -> String {

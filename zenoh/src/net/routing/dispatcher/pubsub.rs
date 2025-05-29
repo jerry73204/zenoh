@@ -125,6 +125,8 @@ pub(crate) fn declare_subscription(
     }
 }
 
+// pub(crate) fn declare_presubscription()
+
 pub(crate) fn undeclare_subscription(
     hat_code: &(dyn HatTrait + Send + Sync),
     tables: &TablesLock,
