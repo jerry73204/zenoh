@@ -552,7 +552,7 @@ where
     type Output = Result<(), DidntWrite>;
 
     fn write(self, writer: &mut W, x: &subscriber::DeclarePreSubscriber) -> Self::Output {
-        let subscriber::DeclarePreSubscriber { handover_sync_id, wire_expr, subscriber_identity, estimated_time } = x;
+        let subscriber::DeclarePreSubscriber { pub_router_id, sync_info, wire_expr, subscriber_identity, estimated_time } = x;
 
         // Header
         let mut header = declare::id::D_PRESUBSCRIBER;
@@ -566,12 +566,12 @@ where
 
         // Body
         // Write HandoverSyncId fields
-        self.write(&mut *writer, handover_sync_id.source_node_id)?;
-        self.write(&mut *writer, handover_sync_id.target_node_id)?;
-        self.write(&mut *writer, handover_sync_id.sync_seq)?;
+        self.write(&mut *writer, sync_info.target_node_id)?;
+        self.write(&mut *writer, sync_info.sync_seq)?;
 
         self.write(&mut *writer, wire_expr)?;
         self.write(&mut *writer, subscriber_identity)?;
+        self.write(&mut *writer, *pub_router_id)?;
         self.write(&mut *writer, estimated_time.as_millis() as u64)?;
 
         // Extensions
@@ -607,11 +607,9 @@ where
 
         // Body
         // Read HandoverSyncId fields
-        let source_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
         let target_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
         let sync_seq: u32 = self.codec.read(&mut *reader)?;
-        let handover_sync_id = subscriber::HandoverSyncId {
-            source_node_id,
+        let sync_info = subscriber::SyncInfo {
             target_node_id,
             sync_seq,
         };
@@ -624,6 +622,7 @@ where
             Mapping::Receiver
         };
         let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
+        let pub_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
         let millis: u64 = self.codec.read(&mut *reader)?;
         let estimated_time = Duration::from_millis(millis);
 
@@ -634,7 +633,7 @@ where
             has_ext = extension::skip(reader, "DeclarePreSubscriber", ext)?;
         }
 
-        Ok(subscriber::DeclarePreSubscriber { handover_sync_id, wire_expr, subscriber_identity, estimated_time })
+        Ok(subscriber::DeclarePreSubscriber { pub_router_id, sync_info, wire_expr, subscriber_identity, estimated_time })
     }
 }
 
