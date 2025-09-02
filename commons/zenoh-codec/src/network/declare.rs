@@ -552,7 +552,13 @@ where
     type Output = Result<(), DidntWrite>;
 
     fn write(self, writer: &mut W, x: &subscriber::DeclarePreSubscriber) -> Self::Output {
-        let subscriber::DeclarePreSubscriber { pub_router_id, sync_info, wire_expr, subscriber_identity, estimated_time } = x;
+        let subscriber::DeclarePreSubscriber {
+            target_router_id,
+            sync_info,
+            id,
+            wire_expr,
+            estimated_time,
+        } = x;
 
         // Header
         let mut header = declare::id::D_PRESUBSCRIBER;
@@ -566,12 +572,14 @@ where
 
         // Body
         // Write HandoverSyncId fields
-        self.write(&mut *writer, sync_info.target_node_id)?;
+        // Body
+        // Write HandoverSyncId fields
+        self.write(&mut *writer, target_router_id)?;
+        self.write(&mut *writer, &sync_info.pub_node_id)?;
+        self.write(&mut *writer, &sync_info.subscriber_identity)?;
         self.write(&mut *writer, sync_info.sync_seq)?;
-
+        self.write(&mut *writer, id)?;
         self.write(&mut *writer, wire_expr)?;
-        self.write(&mut *writer, subscriber_identity)?;
-        self.write(&mut *writer, *pub_router_id)?;
         self.write(&mut *writer, estimated_time.as_millis() as u64)?;
 
         // Extensions
@@ -606,14 +614,17 @@ where
         }
 
         // Body
+        let target_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
         // Read HandoverSyncId fields
-        let target_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+        let pub_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+        let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
         let sync_seq: u32 = self.codec.read(&mut *reader)?;
         let sync_info = subscriber::SyncInfo {
-            target_node_id,
+            pub_node_id,
+            subscriber_identity,
             sync_seq,
         };
-
+        let id: subscriber::SubscriberId = self.codec.read(&mut *reader)?;
         let ccond = Zenoh080Condition::new(imsg::has_flag(self.header, subscriber::flag::N));
         let mut wire_expr: WireExpr<'static> = ccond.read(&mut *reader)?;
         wire_expr.mapping = if imsg::has_flag(self.header, subscriber::flag::M) {
@@ -621,8 +632,6 @@ where
         } else {
             Mapping::Receiver
         };
-        let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
-        let pub_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
         let millis: u64 = self.codec.read(&mut *reader)?;
         let estimated_time = Duration::from_millis(millis);
 
@@ -633,7 +642,13 @@ where
             has_ext = extension::skip(reader, "DeclarePreSubscriber", ext)?;
         }
 
-        Ok(subscriber::DeclarePreSubscriber { pub_router_id, sync_info, wire_expr, subscriber_identity, estimated_time })
+        Ok(subscriber::DeclarePreSubscriber {
+            target_router_id,
+            sync_info,
+            id,
+            wire_expr,
+            estimated_time,
+        })
     }
 }
 

@@ -17,13 +17,15 @@
 //! This module is intended for Zenoh's internal use.
 //!
 //! [Click here for Zenoh's documentation](https://docs.rs/zenoh/latest/zenoh)
-use std::{any::Any, sync::Arc};
+use std::{any::Any, sync::Arc, time::Duration};
 
 use zenoh_config::{unwrap_or_default, Config, WhatAmI};
 use zenoh_protocol::{
     core::ZenohIdProto,
     network::{
-        declare::{queryable::ext::QueryableInfoType, QueryableId, SubscriberId, TokenId},
+        declare::{
+            queryable::ext::QueryableInfoType, QueryableId, SubscriberId, SyncInfo, TokenId,
+        },
         interest::{InterestId, InterestMode, InterestOptions},
         Declare, Oam,
     },
@@ -169,6 +171,21 @@ pub(crate) trait HatPubSubTrait {
         node_id: NodeId,
         send_declare: &mut SendDeclare,
     );
+
+    fn declare_presubscription(
+        &self,
+        tables: &mut Tables,
+        face: &mut Arc<FaceState>,
+        id: SubscriberId,
+        target_router_id: NodeId,
+        sync_info: &SyncInfo,
+        estimated_time: Duration,
+        res: &mut Arc<Resource>,
+        sub_info: &SubscriberInfo,
+        node_id: NodeId,
+        send_declare: &mut SendDeclare,
+    ) { }
+
     fn undeclare_subscription(
         &self,
         tables: &mut Tables,

@@ -343,10 +343,20 @@ impl Primitives for Face {
                 }
             }
             zenoh_protocol::network::DeclareBody::DeclarePreSubscriber(m) => {
-                // let mut declares = vec![];
-                // Compute the shortest path to the next subscriber candidate
-                // also compute the shortes path to the publisher
-                // Send the Declare package to both the subscriber candidate and the publisher
+                let mut declares = vec![];
+                declare_presubscription(
+                    ctrl_lock.as_ref(),
+                    &self.tables,
+                    &mut self.state.clone(),
+                    m.id,
+                    m.target_router_id,
+                    &m.sync_info,
+                    &m.wire_expr,
+                    m.estimated_time,
+                    &SubscriberInfo,
+                    msg.ext_nodeid.node_id,
+                    &mut |p, m| declares.push((p.clone(), m)),
+                );
                 
             }
             zenoh_protocol::network::DeclareBody::UndeclareSubscriber(m) => {

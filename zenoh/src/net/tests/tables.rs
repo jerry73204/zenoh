@@ -905,3 +905,103 @@ fn client_test() {
     // mapping strategy check
     // assert_eq!(primitives2.get_last_key().unwrap(), KeyExpr::IdWithSuffix(31, "/z2_pub1".to_string()));
 }
+
+#[test]
+fn check_resource_success() {
+    // 1. Setup router and tables
+    let config = Config::default();
+    let router = Router::new(
+        ZenohIdProto::try_from([1]).unwrap(),
+        WhatAmI::Client,
+        Some(Arc::new(HLC::default())),
+        &config,
+    )
+    .unwrap();
+    let tables = router.tables.clone();
+    let mut wtables = zwrite!(tables.tables);
+    let mut root = wtables.root_res.clone();
+
+    // 2. Build a resource tree for testing
+    Resource::make_resource(&mut wtables, &mut root, "/a/b/c");
+    Resource::make_resource(&mut wtables, &mut root, "/a/d");
+
+    // Drop write lock and get a read-only root
+    drop(wtables);
+    let rtables = zread!(tables.tables);
+    let root = &rtables.root_res;
+
+    // 3. Test successful cases
+    assert_eq!(Resource::check_resource(root, "/a/b/c").expr(), "/a/b/c");
+    assert_eq!(Resource::check_resource(root, "/a/d").expr(), "/a/d");
+    assert_eq!(Resource::check_resource(root, "/a/b").expr(), "/a/b");
+    assert!(Arc::ptr_eq(root, &Resource::check_resource(root, "")));
+}
+
+#[test]
+#[should_panic(expected = "Resource node not found for chunk: '/x'")]
+fn check_resource_panic_leaf() {
+    let config = Config::default();
+    let router = Router::new(
+        ZenohIdProto::try_from([1]).unwrap(),
+        WhatAmI::Client,
+        Some(Arc::new(HLC::default())),
+        &config,
+    )
+    .unwrap();
+    let tables = router.tables.clone();
+    let mut wtables = zwrite!(tables.tables);
+    let mut root = wtables.root_res.clone();
+    Resource::make_resource(&mut wtables, &mut root, "/a/b/c");
+    drop(wtables);
+    let rtables = zread!(tables.tables);
+    let root = &rtables.root_res;
+
+    // This should panic
+    Resource::check_resource(root, "/a/b/x");
+}
+
+#[test]
+#[should_panic(expected = "Resource node not found for chunk: '/z'")]
+fn check_resource_panic_top_level() {
+    let config = Config::default();
+    let router = Router::new(
+        ZenohIdProto::try_from([1]).unwrap(),
+        WhatAmI::Client,
+        Some(Arc::new(HLC::default())),
+        &config,
+    )
+    .unwrap();
+    let tables = router.tables.clone();
+    let mut wtables = zwrite!(tables.tables);
+    let mut root = wtables.root_res.clone();
+    Resource::make_resource(&mut wtables, &mut root, "/a/b/c");
+    drop(wtables);
+    let rtables = zread!(tables.tables);
+    let root = &rtables.root_res;
+
+    // This should panic
+    Resource::check_resource(root, "/z");
+}
+
+#[test]
+#[should_panic(expected = "Resource node not found for chunk: '/c'")]
+fn check_resource_panic_intermediate() {
+    let config = Config::default();
+    let router = Router::new(
+        ZenohIdProto::try_from([1]).unwrap(),
+        WhatAmI::Client,
+        Some(Arc::new(HLC::default())),
+        &config,
+    )
+    .unwrap();
+    let tables = router.tables.clone();
+    let mut wtables = zwrite!(tables.tables);
+    let mut root = wtables.root_res.clone();
+    Resource::make_resource(&mut wtables, &mut root, "/a/b");
+    drop(wtables);
+    let rtables = zread!(tables.tables);
+    let root = &rtables.root_res;
+
+    // This should panic
+    Resource::check_resource(root, "/a/c");
+}

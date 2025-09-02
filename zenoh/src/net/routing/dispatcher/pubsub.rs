@@ -11,13 +11,13 @@
 // Contributors:
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use zenoh_config::defaults::scouting::multicast::autoconnect::client;
 use zenoh_core::zread;
 use zenoh_protocol::{
-    core::{key_expr::keyexpr, Reliability, WhatAmI, WireExpr}, network::{
-        declare::{ext, SubscriberId},
+    core::{key_expr::keyexpr, Reliability, WhatAmI, WireExpr, ZenohIdProto}, network::{
+        declare::{ext, SubscriberId, SyncInfo},
         Push,
     }, transport::join::flag::T, zenoh::PushBody
 };
@@ -125,7 +125,81 @@ pub(crate) fn declare_subscription(
     }
 }
 
-// pub(crate) fn declare_presubscription()
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn declare_presubscription(
+    hat_code: &(dyn HatTrait + Send + Sync),
+    tables: &TablesLock,
+    face: &mut Arc<FaceState>,
+    id: SubscriberId,
+    target_router_id: NodeId,
+    sync_info: &SyncInfo,
+    expr: &WireExpr,
+    estimated_time: Duration,
+    sub_info: &SubscriberInfo,
+    node_id: NodeId,
+    send_declare: &mut SendDeclare,
+) {
+    // First check the Resource, if it is already there, then it's safe, the subscription is already there
+    let rtables = zread!(tables.tables);
+    match rtables
+        .get_mapping(face, &expr.scope, expr.mapping)
+        .cloned()
+    {
+        Some(mut prefix) => {
+            tracing::debug!(
+                "{} Declare presubscriber {} ({}{})",
+                face,
+                id,
+                prefix.expr(),
+                expr.suffix
+            );
+            Resource::check_resource(&prefix, expr.suffix.as_ref());
+            let pre_suffix = format!("/#{}", expr.suffix.as_ref());
+            let res = Resource::get_resource(&prefix, &pre_suffix);
+            // let res = Resource::get_resource(&prefix, &expr.suffix);
+            let (mut res, mut wtables) =
+                // If the data route is there
+                if res.as_ref().map(|r| r.context.is_some()).unwrap_or(false) {
+                    // drop the read table, get the write table
+                    drop(rtables);
+                    let wtables = zwrite!(tables.tables);
+                    (res.unwrap(), wtables)
+                } else {
+                    drop(rtables);
+                    let mut wtables = zwrite!(tables.tables);
+                    let mut res =
+                        Resource::make_resource(&mut wtables, &mut prefix, expr.suffix.as_ref());
+                    (res, wtables)
+                };
+
+            hat_code.declare_presubscription(
+                &mut wtables,
+                face,
+                id,
+                target_router_id,
+                sync_info,
+                estimated_time,
+                &mut res,
+                sub_info,
+                node_id,
+                send_declare,
+            );
+            drop(wtables);
+        }
+        None => tracing::error!(
+            "{} Declare subscriber {} for unknown scope {}!",
+            face,
+            id,
+            expr.scope
+        ),
+    }
+    // propagate presubscription --> modify the "propagate_sourced_subscription"
+    // the middle nodes need to handle the resource context
+    // (to make the path between the target node and the source node: quick path)
+    //
+    let rtables = zread!(tables.tables);
+    drop(rtables);
+}
 
 pub(crate) fn undeclare_subscription(
     hat_code: &(dyn HatTrait + Send + Sync),

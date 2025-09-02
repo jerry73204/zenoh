@@ -15,6 +15,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     sync::{atomic::Ordering, Arc},
+    time::Duration,
 };
 
 use petgraph::graph::NodeIndex;
@@ -22,8 +23,8 @@ use zenoh_protocol::{
     core::{key_expr::OwnedKeyExpr, WhatAmI, ZenohIdProto},
     network::{
         declare::{
-            common::ext::WireExprType, ext, Declare, DeclareBody, DeclareSubscriber, SubscriberId,
-            UndeclareSubscriber,
+            common::ext::WireExprType, ext, Declare, DeclareBody, DeclarePreSubscriber,
+            DeclareSubscriber, SubscriberId, SyncInfo, UndeclareSubscriber,
         },
         interest::{InterestId, InterestMode},
     },
@@ -31,9 +32,10 @@ use zenoh_protocol::{
 use zenoh_sync::get_mut_unchecked;
 
 use super::{
-    face_hat, face_hat_mut, get_peer, get_router, get_routes_entries, hat, hat_mut,
-    interests::push_declaration_profile, network::Network, res_hat, res_hat_mut, HatCode,
-    HatContext, HatFace, HatTables,
+    face_hat, face_hat_mut, get_peer, get_router, get_router_id, get_routes_entries, hat, hat_mut,
+    interests::push_declaration_profile,
+    network::{Network, Tree},
+    res_hat, res_hat_mut, HatCode, HatContext, HatFace, HatTables,
 };
 #[cfg(feature = "unstable")]
 use crate::key_expr::KeyExpr;
@@ -89,6 +91,56 @@ fn send_sourced_subscription_to_net_children(
                     }
                 }
                 None => tracing::trace!("Unable to find face for zid {}", net.graph[*child].zid),
+            }
+        }
+    }
+}
+
+#[inline]
+fn send_presubscription_to_target_direction(
+    tables: &Tables,
+    net: &Network,
+    tree: &Tree,
+    target_router_id: NodeId, //publisher node id
+    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    estimated_time: Duration, // also send it into packet
+    res: &Arc<Resource>,
+    src_face: Option<&Arc<FaceState>>,
+    _sub_info: &SubscriberInfo,
+    routing_context: NodeId,
+) {
+    if let Some(direction) = tree.directions[target_router_id as usize] {
+        if net.graph.contains_node(direction) {
+            match tables.get_face(&net.graph[direction].zid).cloned() {
+                Some(mut someface) => {
+                    if src_face
+                        .map(|src_face| someface.id != src_face.id)
+                        .unwrap_or(true)
+                    {
+                        let push_declaration = push_declaration_profile(tables, &someface);
+                        let key_expr = Resource::decl_key(res, &mut someface, push_declaration);
+
+                        someface.primitives.send_declare(RoutingContext::with_expr(
+                            Declare {
+                                interest_id: None,
+                                ext_qos: ext::QoSType::DECLARE,
+                                ext_tstamp: None,
+                                ext_nodeid: ext::NodeIdType {
+                                    node_id: routing_context,
+                                },
+                                body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
+                                    target_router_id,
+                                    sync_info: sync_info.clone(),
+                                    id: 0, // Sourced presubscriptions do not use ids
+                                    wire_expr: key_expr,
+                                    estimated_time,
+                                }),
+                            },
+                            res.expr(),
+                        ));
+                    }
+                }
+                None => tracing::trace!("Unable to find face for zid {}", net.graph[direction].zid),
             }
         }
     }
@@ -198,12 +250,59 @@ fn propagate_sourced_subscription(
         Some(tree_sid) => {
             print!("propogate_source_subscription");
             print!("This is net: {:#?}", &net);
-            print!("This is net trees: {:#?}",&net.trees[tree_sid.index()]);
+            print!("This is net trees: {:#?}", &net.trees[tree_sid.index()]);
             if net.trees.len() > tree_sid.index() {
                 send_sourced_subscription_to_net_children(
                     tables,
                     net,
                     &net.trees[tree_sid.index()].children,
+                    res,
+                    src_face,
+                    sub_info,
+                    tree_sid.index() as NodeId,
+                );
+            } else {
+                tracing::trace!(
+                    "Propagating sub {}: tree for node {} sid:{} not yet ready",
+                    res.expr(),
+                    tree_sid.index(),
+                    source
+                );
+            }
+        }
+        None => tracing::error!(
+            "Error propagating sub {}: cannot get index of {}!",
+            res.expr(),
+            source
+        ),
+    }
+}
+
+fn propagate_sourced_presubscription(
+    tables: &Tables,
+    res: &Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    src_face: Option<&Arc<FaceState>>,
+    source: &ZenohIdProto,
+    net_type: WhatAmI,
+    target_router_id: NodeId, //publisher node id
+    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    estimated_time: Duration, // also send it into packet
+) {
+    let net = hat!(tables).get_net(net_type).unwrap();
+    match net.get_idx(source) {
+        Some(tree_sid) => {
+            print!("propogate_source_subscription");
+            print!("This is net: {:#?}", &net);
+            print!("This is net trees: {:#?}", &net.trees[tree_sid.index()]);
+            if net.trees.len() > tree_sid.index() {
+                send_presubscription_to_target_direction(
+                    tables,
+                    net,
+                    &net.trees[tree_sid.index()],
+                    target_router_id,
+                    sync_info,
+                    estimated_time,
                     res,
                     src_face,
                     sub_info,
@@ -234,6 +333,10 @@ fn register_router_subscription(
     router: ZenohIdProto,
     send_declare: &mut SendDeclare,
 ) {
+    println!(
+        "Register_router_subscription: the modity resource context {}",
+        Resource::format_for_no_recursive(&res)
+    );
     if !res_hat!(res).router_subs.contains(&router) {
         // Register router subscription
         {
@@ -253,6 +356,33 @@ fn register_router_subscription(
     propagate_simple_subscription(tables, res, sub_info, face, send_declare);
 }
 
+fn register_router_presubscription(
+    tables: &mut Tables,
+    face: &mut Arc<FaceState>,
+    target_router_id: NodeId, //publisher node id
+    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    estimated_time: Duration, // also send it into packet
+    res: &mut Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    router: ZenohIdProto,
+    send_declare: &mut SendDeclare,
+) {
+    if !res_hat!(res).router_subs.contains(&router) {
+        // Propagate subscription to routers
+        propagate_sourced_presubscription(
+            tables,
+            res,
+            sub_info,
+            Some(face),
+            &router,
+            WhatAmI::Router,
+            target_router_id,
+            sync_info,
+            estimated_time,
+        );
+    }
+}
+
 fn declare_router_subscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
@@ -262,6 +392,30 @@ fn declare_router_subscription(
     send_declare: &mut SendDeclare,
 ) {
     register_router_subscription(tables, face, res, sub_info, router, send_declare);
+}
+
+fn declare_router_presubscription(
+    tables: &mut Tables,
+    face: &mut Arc<FaceState>,
+    target_router_id: NodeId, //publisher node id
+    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    estimated_time: Duration, // also send it into packet
+    res: &mut Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    router: ZenohIdProto,
+    send_declare: &mut SendDeclare,
+) {
+    register_router_presubscription(
+        tables,
+        face,
+        target_router_id,
+        sync_info,
+        estimated_time,
+        res,
+        sub_info,
+        router,
+        send_declare,
+    );
 }
 
 fn register_linkstatepeer_subscription(
@@ -845,8 +999,8 @@ pub(super) fn pubsub_tree_change(
 
     println!("[router] Now the resource tree after 'pubsub tree change' will print");
     // dbg!();
-    println!("[router] root_res tree {:#?}",tables.root_res);
-    // println!(); 
+    println!("[router] root_res tree {:#?}", tables.root_res);
+    // println!();
 }
 
 pub(super) fn pubsub_linkstate_change(
@@ -1095,7 +1249,7 @@ impl HatPubSubTrait for HatCode {
         //     });
         //     true
         // });
-        
+
         match face.whatami {
             WhatAmI::Router => {
                 if let Some(router) = get_router(tables, face, node_id) {
@@ -1119,6 +1273,42 @@ impl HatPubSubTrait for HatCode {
                 }
             }
             _ => declare_simple_subscription(tables, face, id, res, sub_info, send_declare),
+        }
+    }
+
+    fn declare_presubscription(
+        &self,
+        tables: &mut Tables,
+        face: &mut Arc<FaceState>,
+        id: SubscriberId,
+        target_router_id: NodeId, //publisher node id
+        sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+        estimated_time: Duration, // also send it into packet
+        res: &mut Arc<Resource>,
+        sub_info: &SubscriberInfo,
+        node_id: NodeId,
+        send_declare: &mut SendDeclare,
+    ) {
+        match face.whatami {
+            WhatAmI::Router => {
+                let router_opt = get_router(tables, face, node_id);
+                let target_opt = get_router_id(tables, face, target_router_id);
+                if let (Some(router), Some(target_router_id)) = (router_opt, target_opt) {
+                    declare_router_presubscription(
+                        tables,
+                        face,
+                        target_router_id,
+                        sync_info,
+                        estimated_time,
+                        res,
+                        sub_info,
+                        router,
+                        send_declare,
+                    )
+                }
+            }
+            WhatAmI::Client => {}
+            _ => {}
         }
     }
 

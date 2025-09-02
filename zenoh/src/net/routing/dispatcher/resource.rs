@@ -808,6 +808,36 @@ impl Resource {
         }
     }
 
+    #[inline]
+    pub fn check_resource(from: &Arc<Resource>, suffix: &str) -> Arc<Resource> {
+        if suffix.is_empty() {
+            from.clone()
+        } else if let Some(stripped_suffix) = suffix.strip_prefix('/') {
+            let (chunk, rest) = match stripped_suffix.find('/') {
+                Some(idx) => (&suffix[0..(idx + 1)], &suffix[(idx + 1)..]),
+                None => (suffix, ""),
+            };
+            match from.children.get(chunk) {
+                Some(res) => Resource::check_resource(res, rest),
+                None => panic!("Resource node not found for chunk: '{}'", chunk),
+            }
+        } else {
+            match &from.parent {
+                Some(parent) => Resource::check_resource(parent, &[&from.suffix, suffix].concat()),
+                None => {
+                    let (chunk, rest) = match suffix[1..].find('/') {
+                        Some(idx) => (&suffix[0..(idx + 1)], &suffix[(idx + 1)..]),
+                        None => (suffix, ""),
+                    };
+                    match from.children.get(chunk) {
+                        Some(res) => Resource::check_resource(res, rest),
+                        None => panic!("Resource node not found for chunk: '{}'", chunk),
+                    }
+                }
+            }
+        }
+    }
+
     fn fst_chunk(key_expr: &keyexpr) -> (&keyexpr, Option<&keyexpr>) {
         match key_expr.as_bytes().iter().position(|c| *c == b'/') {
             Some(pos) => {

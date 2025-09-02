@@ -915,6 +915,33 @@ fn get_router(tables: &Tables, face: &Arc<FaceState>, nodeid: NodeId) -> Option<
     }
 }
 
+fn get_router_id(tables: &Tables, face: &Arc<FaceState>, nodeid: NodeId) -> Option<NodeId> {
+    match hat!(tables)
+        .routers_net
+        .as_ref()
+        .unwrap()
+        .get_link(face_hat!(face).link_id)
+    {
+        Some(link) => match link.get_local_psid(&(nodeid as u64)) {
+            Some(router) => Some(*router as u16),
+            None => {
+                tracing::error!(
+                    "Received router declaration with unknown routing context id {}",
+                    nodeid
+                );
+                None
+            }
+        },
+        None => {
+            tracing::error!(
+                "Could not find corresponding link in routers network for {}",
+                face
+            );
+            None
+        }
+    }
+}
+
 fn get_peer(tables: &Tables, face: &Arc<FaceState>, nodeid: NodeId) -> Option<ZenohIdProto> {
     match hat!(tables)
         .linkstatepeers_net

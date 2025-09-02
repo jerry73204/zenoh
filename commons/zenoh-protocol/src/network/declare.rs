@@ -321,7 +321,8 @@ pub mod subscriber {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SyncInfo {
         /// Router NodeId after handover
-        pub target_node_id: NodeId,
+        pub pub_node_id: NodeId,
+        pub subscriber_identity: ZenohIdProto,
         /// Unique sync sequence number for this handover
         pub sync_seq: u32,
     }
@@ -372,7 +373,6 @@ pub mod subscriber {
         }
     }
 
-
     /// ```text
     /// Flags:
     /// - N: Named          If N==1 then the key expr has name/suffix
@@ -412,11 +412,27 @@ pub mod subscriber {
     /// ```
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct DeclarePreSubscriber {
-        pub pub_router_id: NodeId,
+        pub target_router_id: NodeId,
         pub sync_info: SyncInfo,
+        pub id: SubscriberId,
         pub wire_expr: WireExpr<'static>,
-        pub subscriber_identity: ZenohIdProto,
-        pub estimated_time: Duration
+        pub estimated_time: Duration,
+    }
+
+    // #[derive(Debug, Clone, PartialEq, Eq)]
+    // pub struct DeclarePreSubscriber_ver2 {
+    //     pub pub_router_id: NodeId,
+    //     pub target_router_id: NodeId,
+    //     pub wire_expr: WireExpr<'static>,
+    //     pub subscriber_identity: ZenohIdProto,
+    //     pub estimated_time: Duration
+    // }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct DeclareRouteUpdate {
+        pub pub_router_id: NodeId,
+        pub wire_expr: WireExpr<'static>,
+        pub estimated_time: Duration,
     }
 
     /// ```text
