@@ -5220,6 +5220,7 @@ dependencies = [
  "which",
  "zenoh",
  "zenoh-ext",
+ "zenoh-protocol",
 ]
 
 [[package]]

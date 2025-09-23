@@ -35,7 +35,7 @@ use zenoh_buffers::ZBuf;
 use zenoh_collections::SingleOrVec;
 use zenoh_config::{qos::PublisherQoSConfig, unwrap_or_default, wrappers::ZenohId};
 use zenoh_core::{zconfigurable, zread, Resolve, ResolveClosure, ResolveFuture, Wait};
-use zenoh_keyexpr::keyexpr_tree::KeBoxTree;
+use zenoh_keyexpr::{key_expr, keyexpr_tree::{arc_tree::IArc, KeBoxTree}};
 #[cfg(feature = "unstable")]
 use zenoh_protocol::network::declare::SubscriberId;
 use zenoh_protocol::{
@@ -47,9 +47,7 @@ use zenoh_protocol::{
     network::{
         self,
         declare::{
-            self, common::ext::WireExprType, queryable::ext::QueryableInfoType, Declare,
-            DeclareBody, DeclareKeyExpr, DeclareQueryable, DeclareSubscriber, DeclareToken,
-            TokenId, UndeclareQueryable, UndeclareSubscriber, UndeclareToken,
+            self, common::ext::WireExprType, queryable::ext::QueryableInfoType, Declare, DeclareBody, DeclareKeyExpr, DeclarePreSubscriber, DeclareQueryable, DeclareSubscriber, DeclareToken, SyncInfo, TokenId, UndeclareQueryable, UndeclareSubscriber, UndeclareToken, NodeId,
         },
         ext,
         interest::{InterestId, InterestMode, InterestOptions},
@@ -90,6 +88,7 @@ use crate::{
             queryable::QueryableBuilder,
             session::OpenBuilder,
             subscriber::SubscriberBuilder,
+            presubscriber::PreSubscriberBuilder,
         },
         bytes::ZBytes,
         encoding::Encoding,
@@ -139,6 +138,7 @@ pub(crate) struct SessionState {
     pub(crate) remote_tokens: HashMap<TokenId, KeyExpr<'static>>,
     //pub(crate) publications: Vec<OwnedKeyExpr>,
     pub(crate) subscribers: HashMap<Id, Arc<SubscriberState>>,
+    pub(crate) presubscribers: HashMap<Id, Arc<SubscriberState>>,
     pub(crate) liveliness_subscribers: HashMap<Id, Arc<SubscriberState>>,
     pub(crate) queryables: HashMap<Id, Arc<QueryableState>>,
     #[cfg(feature = "unstable")]
@@ -173,6 +173,7 @@ impl SessionState {
             remote_tokens: HashMap::new(),
             //publications: Vec::new(),
             subscribers: HashMap::new(),
+            presubscribers: HashMap::new(),
             liveliness_subscribers: HashMap::new(),
             queryables: HashMap::new(),
             #[cfg(feature = "unstable")]
@@ -418,6 +419,48 @@ impl SessionState {
         }
 
         (sub_state, declared_sub)
+    }
+
+    fn register_presubscriber<'a>(
+        &mut self,
+        id: EntityId,
+        key_expr: &'a KeyExpr,
+        origin: Locality,
+        callback: Callback<Sample>,
+    ) -> Arc<SubscriberState> {
+        let sub_state = SubscriberState {
+            id,
+            remote_id: id,
+            key_expr: key_expr.clone().into_owned(),
+            origin,
+            callback,
+        };
+        let sub_state = Arc::new(sub_state);
+
+        self.presubscribers
+            .insert(sub_state.id, sub_state.clone());
+        for res in self
+            .local_resources
+            .values_mut()
+            .filter_map(Resource::as_node_mut)
+        {
+            if key_expr.intersects(&res.key_expr) {
+                res.subscribers_mut(SubscriberKind::Subscriber)
+                    .push(sub_state.clone());
+            }
+        }
+        for res in self
+            .remote_resources
+            .values_mut()
+            .filter_map(Resource::as_node_mut)
+        {
+            if key_expr.intersects(&res.key_expr) {
+                res.subscribers_mut(SubscriberKind::Subscriber)
+                    .push(sub_state.clone());
+            }
+        }
+
+        sub_state
     }
 }
 
@@ -884,6 +927,44 @@ impl Session {
         <TryIntoKeyExpr as TryInto<KeyExpr<'b>>>::Error: Into<zenoh_result::Error>,
     {
         SubscriberBuilder {
+            session: self,
+            key_expr: TryIntoKeyExpr::try_into(key_expr).map_err(Into::into),
+            origin: Locality::default(),
+            handler: DefaultHandler::default(),
+        }
+    }
+
+    /// Create a [`PreSubscriber`](crate::pubsub::PreSubscriber) for the given key expression.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_expr` - The resourkey expression to subscribe to
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() {
+    ///
+    /// let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    /// let presubscriber = session.declare_presubscriber("key/expression")
+    ///     .await
+    ///     .unwrap();
+    /// tokio::task::spawn(async move {
+    ///     while let Ok(sample) = presubscriber.recv_async().await {
+    ///         println!("Received: {:?}", sample);
+    ///     }
+    /// }).await;
+    /// # }
+    /// ```
+    pub fn declare_presubscriber<'b, TryIntoKeyExpr>(
+        &self,
+        key_expr: TryIntoKeyExpr,
+    ) -> PreSubscriberBuilder<'_, 'b, DefaultHandler>
+    where
+        TryIntoKeyExpr: TryInto<KeyExpr<'b>>,
+        <TryIntoKeyExpr as TryInto<KeyExpr<'b>>>::Error: Into<zenoh_result::Error>,
+    {
+        PreSubscriberBuilder {
             session: self,
             key_expr: TryIntoKeyExpr::try_into(key_expr).map_err(Into::into),
             origin: Locality::default(),
@@ -1526,6 +1607,67 @@ impl SessionInner {
             #[cfg(feature = "unstable")]
             self.update_matching_status(&state, key_expr, MatchingStatusType::Subscribers, true)
         }
+
+        Ok(sub_state)
+    }
+
+    pub(crate) fn declare_presubscriber_inner(
+        self: &Arc<Self>,
+        key_expr: &KeyExpr,
+        origin: Locality,
+        callback: Callback<Sample>,
+        estimated_time: Duration,
+    ) -> ZResult<Arc<SubscriberState>> {
+        let key_expr = KeyExpr::new(format!("%/{}", key_expr.as_str()))?;
+        let mut state = zwrite!(self.state);
+        tracing::trace!("declare_presubscriber({:?})", &key_expr);
+        let id = self.runtime.next_id();
+        let sub_state = state.register_presubscriber(id, &key_expr, origin, callback);
+
+        // if origin != Locality::SessionLocal {
+            let primitives = state.primitives()?;
+            drop(state);
+
+            let target_router_id: NodeId = 1;
+            let pub_node_id: NodeId = 3;
+            let zid = self.zid().into();
+            let sequence_number: u32 = 123;
+            let sync_info = SyncInfo {
+                pub_node_id: pub_node_id,
+                subscriber_identity: zid,
+                sync_seq: sequence_number,
+            };
+            primitives.send_declare(Declare {
+                interest_id: None,
+                ext_qos: declare::ext::QoSType::DECLARE,
+                ext_tstamp: None,
+                ext_nodeid: declare::ext::NodeIdType::DEFAULT,
+                body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
+                    target_router_id,
+                    sync_info,
+                    id,
+                    wire_expr: key_expr.to_wire(self).to_owned(),
+                    estimated_time,
+                }),
+            });
+            #[cfg(feature = "unstable")]
+            {
+                let state = zread!(self.state);
+                self.update_matching_status(
+                    &state,
+                    &key_expr,
+                    MatchingStatusType::Subscribers,
+                    true,
+                )
+            }
+        // } else {
+        //     drop(state);
+        //     #[cfg(feature = "unstable")]
+        //     {
+        //         let state = zread!(self.state);
+        //         self.update_matching_status(&state, key_expr, MatchingStatusType::Subscribers, true)
+        //     }
+        // }
 
         Ok(sub_state)
     }
@@ -2741,7 +2883,9 @@ impl Primitives for WeakSession {
                     }
                 }
             }
-            zenoh_protocol::network::DeclareBody::DeclarePreSubscriber(m) => todo!(),
+            zenoh_protocol::network::DeclareBody::DeclarePreSubscriber(m) => {
+                trace!("recv DeclarePreSubscriber {:?}", m);
+            },
             DeclareBody::DeclareFinal(DeclareFinal) => {
                 trace!("recv DeclareFinal {:?}", msg.interest_id);
                 if let Some(interest_id) = msg.interest_id {

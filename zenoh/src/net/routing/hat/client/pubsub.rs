@@ -15,13 +15,14 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
+    time::Duration,
 };
 
 use zenoh_protocol::{
     core::{key_expr::OwnedKeyExpr, WhatAmI},
     network::declare::{
-        common::ext::WireExprType, ext, Declare, DeclareBody, DeclareSubscriber, SubscriberId,
-        UndeclareSubscriber,
+        common::ext::WireExprType, ext, Declare, DeclareBody, DeclareSubscriber, DeclarePreSubscriber,
+        SubscriberId, SyncInfo, UndeclareSubscriber,
     },
 };
 use zenoh_sync::get_mut_unchecked;
@@ -77,6 +78,47 @@ fn propagate_simple_subscription_to(
     }
 }
 
+#[inline]
+fn propagate_simple_presubscription_to(
+    _tables: &mut Tables,
+    dst_face: &mut Arc<FaceState>,
+    res: &Arc<Resource>,
+    _sub_info: &SubscriberInfo,
+    src_face: &mut Arc<FaceState>,
+    target_router_id: NodeId, //publisher node id
+    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    estimated_time: Duration, // also send it into packet
+    send_declare: &mut SendDeclare,
+) {
+    if src_face.id != dst_face.id
+        // && !face_hat!(dst_face).local_subs.contains_key(res)
+        && (src_face.whatami == WhatAmI::Client || dst_face.whatami == WhatAmI::Client)
+    {
+        let id = face_hat!(dst_face).next_id.fetch_add(1, Ordering::SeqCst);
+        face_hat_mut!(dst_face).local_subs.insert(res.clone(), id);
+        let key_expr = Resource::decl_key(res, dst_face, true);
+        send_declare(
+            &dst_face.primitives,
+            RoutingContext::with_expr(
+                Declare {
+                    interest_id: None,
+                    ext_qos: ext::QoSType::DECLARE,
+                    ext_tstamp: None,
+                    ext_nodeid: ext::NodeIdType::DEFAULT,
+                    body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
+                        target_router_id,
+                        sync_info: sync_info.clone(),
+                        id,
+                        wire_expr: key_expr,
+                        estimated_time,
+                    }),
+                },
+                res.expr(),
+            ),
+        );
+    }
+}
+
 fn propagate_simple_subscription(
     tables: &mut Tables,
     res: &Arc<Resource>,
@@ -96,6 +138,36 @@ fn propagate_simple_subscription(
             res,
             sub_info,
             src_face,
+            send_declare,
+        );
+    }
+}
+
+fn propagate_simple_presubscription(
+    tables: &mut Tables,
+    res: &Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    src_face: &mut Arc<FaceState>,
+    target_router_id: NodeId, //publisher node id
+    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    estimated_time: Duration, // also send it into packet
+    send_declare: &mut SendDeclare,
+) {
+    for mut dst_face in tables
+        .faces
+        .values()
+        .cloned()
+        .collect::<Vec<Arc<FaceState>>>()
+    {
+        propagate_simple_presubscription_to(
+            tables,
+            &mut dst_face,
+            res,
+            sub_info,
+            src_face,
+            target_router_id,
+            sync_info,
+            estimated_time,
             send_declare,
         );
     }
@@ -140,6 +212,22 @@ fn declare_simple_subscription(
     register_simple_subscription(tables, face, id, res, sub_info);
 
     propagate_simple_subscription(tables, res, sub_info, face, send_declare);
+}
+
+fn declare_simple_presubscription(
+    tables: &mut Tables,
+    face: &mut Arc<FaceState>,
+    id: SubscriberId,
+    target_router_id: NodeId, //publisher node id
+    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    estimated_time: Duration, // a
+    res: &mut Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    send_declare: &mut SendDeclare,
+) {
+    register_simple_subscription(tables, face, id, res, sub_info);
+
+    propagate_simple_presubscription(tables, res, sub_info, face, target_router_id, sync_info, estimated_time, send_declare);
 }
 
 #[inline]
@@ -275,6 +363,22 @@ impl HatPubSubTrait for HatCode {
         send_declare: &mut SendDeclare,
     ) {
         declare_simple_subscription(tables, face, id, res, sub_info, send_declare);
+    }
+
+    fn declare_presubscription(
+        &self,
+        tables: &mut Tables,
+        face: &mut Arc<FaceState>,
+        id: SubscriberId,
+        target_router_id: NodeId, //publisher node id
+        sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+        estimated_time: Duration, // also send it into packet
+        res: &mut Arc<Resource>,
+        sub_info: &SubscriberInfo,
+        node_id: NodeId,
+        send_declare: &mut SendDeclare,
+    ) {
+        declare_simple_presubscription(tables, face, id, target_router_id, sync_info, estimated_time, res, sub_info, send_declare);
     }
 
     fn undeclare_subscription(

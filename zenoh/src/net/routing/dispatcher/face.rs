@@ -357,7 +357,10 @@ impl Primitives for Face {
                     msg.ext_nodeid.node_id,
                     &mut |p, m| declares.push((p.clone(), m)),
                 );
-                
+                drop(ctrl_lock);
+                for (p, m) in declares {
+                    p.send_declare(m);
+                }
             }
             zenoh_protocol::network::DeclareBody::UndeclareSubscriber(m) => {
                 let mut declares = vec![];

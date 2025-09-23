@@ -16,10 +16,13 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use zenoh_config::defaults::scouting::multicast::autoconnect::client;
 use zenoh_core::zread;
 use zenoh_protocol::{
-    core::{key_expr::keyexpr, Reliability, WhatAmI, WireExpr, ZenohIdProto}, network::{
+    core::{key_expr::keyexpr, Reliability, WhatAmI, WireExpr, ZenohIdProto},
+    network::{
         declare::{ext, SubscriberId, SyncInfo},
         Push,
-    }, transport::join::flag::T, zenoh::PushBody
+    },
+    transport::join::flag::T,
+    zenoh::PushBody,
 };
 use zenoh_sync::get_mut_unchecked;
 
@@ -139,6 +142,8 @@ pub(crate) fn declare_presubscription(
     node_id: NodeId,
     send_declare: &mut SendDeclare,
 ) {
+    // Get the prefix @ under the resource tree, (a new function align with get_mapping)
+    // Or match the face, if it is from client, add the %/ prefix
     // First check the Resource, if it is already there, then it's safe, the subscription is already there
     let rtables = zread!(tables.tables);
     match rtables
@@ -153,10 +158,9 @@ pub(crate) fn declare_presubscription(
                 prefix.expr(),
                 expr.suffix
             );
-            Resource::check_resource(&prefix, expr.suffix.as_ref());
-            let pre_suffix = format!("/#{}", expr.suffix.as_ref());
-            let res = Resource::get_resource(&prefix, &pre_suffix);
-            // let res = Resource::get_resource(&prefix, &expr.suffix);
+            // Resource::check_resource(&prefix, expr.suffix.as_ref());
+            // let pre_suffix = format!("{}/%", expr.suffix.as_ref());
+            let res = Resource::get_resource(&prefix, &expr.suffix);
             let (mut res, mut wtables) =
                 // If the data route is there
                 if res.as_ref().map(|r| r.context.is_some()).unwrap_or(false) {
@@ -171,7 +175,7 @@ pub(crate) fn declare_presubscription(
                         Resource::make_resource(&mut wtables, &mut prefix, expr.suffix.as_ref());
                     (res, wtables)
                 };
-
+            tracing::trace!("The key expression {} enters the hat_code.declare_presubscription routine.", {res.expr()});
             hat_code.declare_presubscription(
                 &mut wtables,
                 face,
@@ -185,6 +189,20 @@ pub(crate) fn declare_presubscription(
                 send_declare,
             );
             drop(wtables);
+
+            let rtables = zread!(tables.tables);
+            let matches_data_routes = compute_matches_data_routes(&rtables, &res);
+            drop(rtables);
+
+            let wtables = zwrite!(tables.tables);
+            // put the compute route path into resource tree
+            for (mut res, data_routes) in matches_data_routes {
+                get_mut_unchecked(&mut res)
+                    .context_mut()
+                    .update_data_routes(data_routes);
+            }
+            drop(wtables);
+            // Compute the route path for the presubscribe control message route
         }
         None => tracing::error!(
             "{} Declare subscriber {} for unknown scope {}!",
@@ -310,7 +328,6 @@ pub(crate) fn compute_data_routes(tables: &Tables, expr: &mut RoutingExpr) -> Da
 }
 
 pub(crate) fn update_data_routes(tables: &Tables, res: &mut Arc<Resource>) {
-    
     if res.context.is_some() {
         let mut res_mut = res.clone();
         let res_mut = get_mut_unchecked(&mut res_mut);
@@ -351,6 +368,18 @@ pub(crate) fn compute_matches_data_routes<'a>(
                 routes.push((match_, match_routes));
             }
         }
+    }
+    routes
+}
+
+pub(crate) fn compute_presubscribe_control_routes<'a>(
+    tables: &'a Tables,
+    res: &'a Arc<Resource>,
+) -> Vec<(Arc<Resource>, DataRoutes)> {
+    let mut routes = vec![];
+    if res.context.is_some() {
+        let mut expr = RoutingExpr::new(res, "");
+        routes.push((res.clone(), compute_data_routes(tables, &mut expr)));
     }
     routes
 }
@@ -536,7 +565,7 @@ pub fn route_data(
                             // println!("Now is going to Push the message");
                             // println!("Outgoing interface: {:#?}", &outface);
                             // println!("the WireExpr in the route: {:#?}", key_expr);
-                            // println!("the context node_id: {}", context);    
+                            // println!("the context node_id: {}", context);
                             outface.primitives.send_push(
                                 Push {
                                     wire_expr: key_expr.into(),
@@ -571,7 +600,7 @@ pub fn route_data(
                             // println!("Now is going to Push the message");
                             // println!("Outgoing interface: {:#?}", &outface);
                             // println!("the WireExpr in the route: {:#?}", key_expr);
-                            // println!("the context node_id: {}", context); 
+                            // println!("the context node_id: {}", context);
                             outface.primitives.send_push(
                                 Push {
                                     wire_expr: key_expr,
