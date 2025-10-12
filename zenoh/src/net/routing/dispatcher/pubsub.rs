@@ -76,8 +76,6 @@ pub(crate) fn declare_subscription(
                     let wtables = zwrite!(tables.tables);
                     (res.unwrap(), wtables)
                 } else {
-                    // if the data_route is not there,
-                    // get the full expression from scope, if zero, it will be root_res, or it will be remote_mapping or local_mapping's suffix
                     let mut fullexpr = prefix.expr();
                     fullexpr.push_str(expr.suffix.as_ref());
                     //find the resources from the root_res of table, find all the matches key_expression resources
@@ -134,8 +132,8 @@ pub(crate) fn declare_presubscription(
     tables: &TablesLock,
     face: &mut Arc<FaceState>,
     id: SubscriberId,
-    target_router_id: NodeId,
-    sync_info: &SyncInfo,
+    target_router_id: Option<NodeId>,
+    sync_info: Option<SyncInfo>,
     expr: &WireExpr,
     estimated_time: Duration,
     sub_info: &SubscriberInfo,
@@ -169,10 +167,18 @@ pub(crate) fn declare_presubscription(
                     let wtables = zwrite!(tables.tables);
                     (res.unwrap(), wtables)
                 } else {
+                    let mut fullexpr = prefix.expr();
+                    fullexpr.push_str(expr.suffix.as_ref());
+                    //find the resources from the root_res of table, find all the matches key_expression resources
+                    let mut matches = keyexpr::new(fullexpr.as_str())
+                        .map(|ke| Resource::get_matches(&rtables, ke))
+                        .unwrap_or_default();
                     drop(rtables);
                     let mut wtables = zwrite!(tables.tables);
                     let mut res =
                         Resource::make_resource(&mut wtables, &mut prefix, expr.suffix.as_ref());
+                    matches.push(Arc::downgrade(&res));
+                    Resource::match_resource(&wtables, &mut res, matches);
                     (res, wtables)
                 };
             tracing::trace!("The key expression {} enters the hat_code.declare_presubscription routine.", {res.expr()});
@@ -188,6 +194,8 @@ pub(crate) fn declare_presubscription(
                 node_id,
                 send_declare,
             );
+
+            disable_matches_data_routes(&mut wtables, &mut res);
             drop(wtables);
 
             let rtables = zread!(tables.tables);
@@ -214,9 +222,12 @@ pub(crate) fn declare_presubscription(
     // propagate presubscription --> modify the "propagate_sourced_subscription"
     // the middle nodes need to handle the resource context
     // (to make the path between the target node and the source node: quick path)
-    //
-    let rtables = zread!(tables.tables);
-    drop(rtables);
+    {
+        let rtables = zread!(tables.tables);
+        println!("hat_code info: {}", hat_code.info(&rtables, face.whatami));
+        println!("Now the resource tree after 'declare_presubscription' will print");
+        println!("root_res tree {:#?}", rtables._get_root());
+    }
 }
 
 pub(crate) fn undeclare_subscription(

@@ -318,7 +318,7 @@ pub mod subscriber {
 
     /// SyncInfo represents the synchronization identifier between routers during handover
     /// It contains information about the target router (after handover) and a unique sequence number
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     pub struct SyncInfo {
         pub subscriber_identity: ZenohIdProto,
         /// Router NodeId after handover
@@ -331,6 +331,7 @@ pub mod subscriber {
         pub const N: u8 = 1 << 5; // 0x20 Named         if N==1 then the key expr has name/suffix
         pub const M: u8 = 1 << 6; // 0x40 Mapping       if M==1 then key expr mapping is the one declared by the sender, else it is the one declared by the receiver
         pub const Z: u8 = 1 << 7; // 0x80 Extensions    if Z==1 then an extension will follow
+        pub const H: u8 = 1 << 7; // 0x80 HandoverInfo  if H==1 then HandoverInfo (tgt_router_id, sync_info) is present (only for DeclarePreSubscriber)
     }
 
     /// ```text
@@ -375,14 +376,13 @@ pub mod subscriber {
 
     /// ```text
     /// Flags:
-    /// - H: HandoverInfo   If H==1 then HandoverInfo (tgt_router_id, sync_info) is present
     /// - N: Named          If N==1 then the key expr has name/suffix
     /// - M: Mapping        if M==1 then key expr mapping is the one declared by the sender, else it is the one declared by the receiver
-    /// - Z: Extension      If Z==1 then at least one extension is present
+    /// - H: HandoverInfo   If H==1 then HandoverInfo (tgt_router_id, sync_info) is present
     ///
     /// 7 6 5 4 3 2 1 0
     /// +-+-+-+-+-+-+-+-+
-    /// |Z|M|N|H|DPRESUB|
+    /// |H|M|N| DPRESUB |
     /// +---------------+
     /// ~  subs_id:z32  ~
     /// +---------------+
@@ -401,8 +401,6 @@ pub mod subscriber {
     /// +---------------+
     /// ~  sync_seq:z32   ~
     /// +---------------+
-    /// ~  [decl_exts]  ~  if Z==1
-    /// +---------------+
     ///
     /// Field details:
     /// - subs_id: The unique ID for this pre-subscription.
@@ -413,7 +411,6 @@ pub mod subscriber {
     ///   - subscriber_id: The ZenohId of the client initiating the pre-subscription.
     ///   - pub_router_id: The NodeId of the router that will publish the data. Added by the network.
     ///   - sync_seq: A sequence number for the handover process. Added by the network.
-    /// - [decl_exts]: Optional extensions if Z==1.
     /// ```
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct DeclarePreSubscriber {

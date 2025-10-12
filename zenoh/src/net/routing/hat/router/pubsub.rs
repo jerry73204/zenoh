@@ -14,6 +14,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    str::FromStr,
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
@@ -101,9 +102,9 @@ fn send_presubscription_to_target_direction(
     tables: &Tables,
     net: &Network,
     tree: &Tree,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
-    estimated_time: Duration, // also send it into packet
+    target_router_id: NodeId,
+    sync_info: SyncInfo,
+    estimated_time: Duration,
     res: &Arc<Resource>,
     src_face: Option<&Arc<FaceState>>,
     _sub_info: &SubscriberInfo,
@@ -129,8 +130,8 @@ fn send_presubscription_to_target_direction(
                                     node_id: routing_context,
                                 },
                                 body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
-                                    target_router_id,
-                                    sync_info: sync_info.clone(),
+                                    target_router_id: Some(target_router_id),
+                                    sync_info: Some(sync_info),
                                     id: 0, // Sourced presubscriptions do not use ids
                                     wire_expr: key_expr,
                                     estimated_time,
@@ -285,13 +286,13 @@ fn propagate_sourced_presubscription(
     src_face: Option<&Arc<FaceState>>,
     source: &ZenohIdProto,
     net_type: WhatAmI,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
-    estimated_time: Duration, // also send it into packet
+    target_router: &ZenohIdProto,
+    sync_info: SyncInfo,
+    estimated_time: Duration,
 ) {
     let net = hat!(tables).get_net(net_type).unwrap();
-    match net.get_idx(source) {
-        Some(tree_sid) => {
+    match (net.get_idx(source), net.get_idx(target_router)) {
+        (Some(tree_sid), Some(target_router_id)) => {
             print!("propogate_source_presubscription");
             print!("This is net: {:#?}", &net);
             print!("This is net trees: {:#?}", &net.trees[tree_sid.index()]);
@@ -300,7 +301,7 @@ fn propagate_sourced_presubscription(
                     tables,
                     net,
                     &net.trees[tree_sid.index()],
-                    target_router_id,
+                    target_router_id.index() as NodeId,
                     sync_info,
                     estimated_time,
                     res,
@@ -317,10 +318,11 @@ fn propagate_sourced_presubscription(
                 );
             }
         }
-        None => tracing::error!(
-            "Error propagating sub {}: cannot get index of {}!",
+        (_, _) => tracing::error!(
+            "Error propagating sub {}: cannot get index of {} and {}!",
             res.expr(),
-            source
+            source,
+            target_router
         ),
     }
 }
@@ -359,9 +361,9 @@ fn register_router_subscription(
 fn register_router_presubscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
-    estimated_time: Duration, // also send it into packet
+    target_router: ZenohIdProto,
+    sync_info: SyncInfo,
+    estimated_time: Duration,
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
     router: ZenohIdProto,
@@ -375,13 +377,12 @@ fn register_router_presubscription(
         {
             tracing::trace!("router: {:?}", router);
             res_hat_mut!(res).router_subs.insert(router);
-            if let Some(target_router) = get_router(tables, face, target_router_id) {
-                tracing::trace!("target_router: {:?}", target_router);
-                res_hat_mut!(res).router_subs.insert(target_router);
-                tracing::trace!("register_router_presubscription for {} and {}",router, target_router);
-            };
+            tracing::trace!("target_router: {:?}", target_router);
+            res_hat_mut!(res).router_subs.insert(target_router);
+            tracing::trace!("register_router_presubscription for {} and {}",router, target_router);
         }
         // Propagate subscription to routers
+
         propagate_sourced_presubscription(
             tables,
             res,
@@ -389,7 +390,7 @@ fn register_router_presubscription(
             Some(face),
             &router,
             WhatAmI::Router,
-            target_router_id,
+            &target_router,
             sync_info,
             estimated_time,
         );
@@ -410,9 +411,9 @@ fn declare_router_subscription(
 fn declare_router_presubscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
-    estimated_time: Duration, // also send it into packet
+    target_router: ZenohIdProto,
+    sync_info: SyncInfo,
+    estimated_time: Duration,
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
     router: ZenohIdProto,
@@ -421,7 +422,7 @@ fn declare_router_presubscription(
     register_router_presubscription(
         tables,
         face,
-        target_router_id,
+        target_router,
         sync_info,
         estimated_time,
         res,
@@ -508,9 +509,7 @@ fn declare_simple_subscription(
 fn declare_simple_presubscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
-    estimated_time: Duration, // also send it into packet
+    estimated_time: Duration,
     id: SubscriberId,
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
@@ -519,6 +518,18 @@ fn declare_simple_presubscription(
     tracing::trace!("declare_simple_presubscription");
     // register_simple_subscription(tables, face, id, res, sub_info);
     let zid = tables.zid;
+    let subscriber_identity = face.zid;
+    //temporary fix it here
+    let target_router_id = match ZenohIdProto::from_str("bef96187ff749ce9379ef4257d963e18") {
+        Ok(id) => id,
+        Err(_) => {
+            tracing::error!("Invalid hardcoded ZenohIdProto in declare_simple_presubscription");
+            return;
+        }
+    };
+    let pub_node_id = 2;  // Filled in by the subscription (todo!)
+    let sync_seq = 123;
+    let sync_info = SyncInfo { subscriber_identity, pub_node_id, sync_seq };
     register_router_presubscription(
         tables,
         face,
@@ -1037,10 +1048,8 @@ pub(super) fn pubsub_tree_change(
     // recompute routes
     update_data_routes_from(tables, &mut tables.root_res.clone());
 
-    println!("[router] Now the resource tree after 'pubsub tree change' will print");
-    // dbg!();
-    println!("[router] root_res tree {:#?}", tables.root_res);
-    // println!();
+    // println!("[router] Now the resource tree after 'pubsub tree change' will print");
+    // println!("[router] root_res tree {:#?}", tables.root_res);
 }
 
 pub(super) fn pubsub_linkstate_change(
@@ -1321,9 +1330,9 @@ impl HatPubSubTrait for HatCode {
         tables: &mut Tables,
         face: &mut Arc<FaceState>,
         id: SubscriberId,
-        target_router_id: NodeId, //publisher node id
-        sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
-        estimated_time: Duration, // also send it into packet
+        target_router_id: Option<NodeId>,
+        sync_info: Option<SyncInfo>,
+        estimated_time: Duration,
         res: &mut Arc<Resource>,
         sub_info: &SubscriberInfo,
         node_id: NodeId,
@@ -1332,13 +1341,19 @@ impl HatPubSubTrait for HatCode {
         match face.whatami {
             WhatAmI::Router => {
                 tracing::trace!("The presubscription is from router!");
+                let Some((target_router_id, sync_info)) = target_router_id.zip(sync_info) else { return };
                 let router_opt = get_router(tables, face, node_id);
-                let target_opt = get_router_id(tables, face, target_router_id);
-                if let (Some(router), Some(target_router_id)) = (router_opt, target_opt) {
+                let target_opt = get_router(tables, face, target_router_id);
+                let pub_node_opt = get_router_id(tables, face, sync_info.pub_node_id);
+                if let (Some(router), Some(target_router), Some(pub_node_id)) = (router_opt, target_opt, pub_node_opt) {
+                    let sync_info = SyncInfo {
+                        pub_node_id: pub_node_id,
+                        ..sync_info
+                    };
                     declare_router_presubscription(
                         tables,
                         face,
-                        target_router_id,
+                        target_router,
                         sync_info,
                         estimated_time,
                         res,
@@ -1347,10 +1362,11 @@ impl HatPubSubTrait for HatCode {
                         send_declare,
                     )
                 }
+
             }
             WhatAmI::Client => {
                 tracing::trace!("Receive Presubscription!!!");
-                declare_simple_presubscription(tables, face, target_router_id, sync_info, estimated_time, id, res, sub_info, send_declare);
+                declare_simple_presubscription(tables, face, estimated_time, id, res, sub_info, send_declare);
             }
             _ => {}
         }
@@ -1466,6 +1482,11 @@ impl HatPubSubTrait for HatCode {
                             if let Some(direction) =
                                 net.trees[source as usize].directions[sub_idx.index()]
                             {
+                                tracing::trace!(
+                                    "The sub_idx: {:?}, direction: {:?}",
+                                    sub_idx,
+                                    direction
+                                );
                                 if net.graph.contains_node(direction) {
                                     if let Some(face) = tables.get_face(&net.graph[direction].zid) {
                                         route.entry(face.id).or_insert_with(|| {
@@ -1525,6 +1546,11 @@ impl HatPubSubTrait for HatCode {
                     WhatAmI::Router => source,
                     _ => net.idx.index() as NodeId,
                 };
+                tracing::trace!(
+                    "insert_faces_for_subs(source: {}, subs: {:?} )",
+                    router_source,
+                    &res_hat!(mres).router_subs
+                );
                 insert_faces_for_subs(
                     &mut route,
                     expr,
@@ -1541,6 +1567,11 @@ impl HatPubSubTrait for HatCode {
                     WhatAmI::Peer => source,
                     _ => net.idx.index() as NodeId,
                 };
+                tracing::trace!(
+                    "insert_faces_for_subs(source: {}, subs: {:?} )",
+                    peer_source,
+                    &res_hat!(mres).linkstatepeer_subs,
+                );
                 insert_faces_for_subs(
                     &mut route,
                     expr,

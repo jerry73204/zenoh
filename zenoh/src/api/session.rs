@@ -1628,23 +1628,23 @@ impl SessionInner {
             let primitives = state.primitives()?;
             drop(state);
 
-            let target_router_id: NodeId = 1;
-            let pub_node_id: NodeId = 3;
-            let zid = self.zid().into();
-            let sequence_number: u32 = 123;
-            let sync_info = SyncInfo {
-                pub_node_id: pub_node_id,
-                subscriber_identity: zid,
-                sync_seq: sequence_number,
-            };
+            // let target_router_id: NodeId = 1;
+            // let pub_node_id: NodeId = 3;
+            // let zid = self.zid().into();
+            // let sequence_number: u32 = 123;
+            // let sync_info = SyncInfo {
+            //     pub_node_id: pub_node_id,
+            //     subscriber_identity: zid,
+            //     sync_seq: sequence_number,
+            // };
             primitives.send_declare(Declare {
                 interest_id: None,
                 ext_qos: declare::ext::QoSType::DECLARE,
                 ext_tstamp: None,
                 ext_nodeid: declare::ext::NodeIdType::DEFAULT,
                 body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
-                    target_router_id,
-                    sync_info,
+                    target_router_id: None,
+                    sync_info: None,
                     id,
                     wire_expr: key_expr.to_wire(self).to_owned(),
                     estimated_time,

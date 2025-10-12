@@ -85,8 +85,8 @@ fn propagate_simple_presubscription_to(
     res: &Arc<Resource>,
     _sub_info: &SubscriberInfo,
     src_face: &mut Arc<FaceState>,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    target_router_id: Option<NodeId>, //publisher node id
+    sync_info: Option<SyncInfo>,     // presubscriber id: sync_info.target_node_id
     estimated_time: Duration, // also send it into packet
     send_declare: &mut SendDeclare,
 ) {
@@ -148,8 +148,8 @@ fn propagate_simple_presubscription(
     res: &Arc<Resource>,
     sub_info: &SubscriberInfo,
     src_face: &mut Arc<FaceState>,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    target_router_id: Option<NodeId>, //publisher node id
+    sync_info: Option<SyncInfo>,     // presubscriber id: sync_info.target_node_id
     estimated_time: Duration, // also send it into packet
     send_declare: &mut SendDeclare,
 ) {
@@ -218,8 +218,8 @@ fn declare_simple_presubscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
     id: SubscriberId,
-    target_router_id: NodeId, //publisher node id
-    sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+    target_router_id: Option<NodeId>, //publisher node id
+    sync_info: Option<SyncInfo>,     // presubscriber id: sync_info.target_node_id
     estimated_time: Duration, // a
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
@@ -370,8 +370,8 @@ impl HatPubSubTrait for HatCode {
         tables: &mut Tables,
         face: &mut Arc<FaceState>,
         id: SubscriberId,
-        target_router_id: NodeId, //publisher node id
-        sync_info: &SyncInfo,     // presubscriber id: sync_info.target_node_id
+        target_router_id: Option<NodeId>, //publisher node id
+        sync_info: Option<SyncInfo>,     // presubscriber id: sync_info.target_node_id
         estimated_time: Duration, // also send it into packet
         res: &mut Arc<Resource>,
         sub_info: &SubscriberInfo,

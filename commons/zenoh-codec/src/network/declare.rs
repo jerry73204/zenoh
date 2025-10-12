@@ -570,7 +570,7 @@ where
         }
         let has_handover_info = target_router_id.is_some() && sync_info.is_some();
         if has_handover_info {
-            header |= 0x10; // H flag
+            header |= subscriber::flag::H;
         }
         self.write(&mut *writer, header)?;
 
@@ -619,9 +619,6 @@ where
             return Err(DidntRead);
         }
 
-        const H_FLAG: u8 = 0x10;
-        let has_handover_info = imsg::has_flag(self.header, H_FLAG);
-
         // Body
         let id: subscriber::SubscriberId = self.codec.read(&mut *reader)?;
         let ccond = Zenoh080Condition::new(imsg::has_flag(self.header, subscriber::flag::N));
@@ -634,7 +631,7 @@ where
         let millis: u64 = self.codec.read(&mut *reader)?;
         let estimated_time = Duration::from_millis(millis);
 
-        let (target_router_id, sync_info) = if has_handover_info {
+        let (target_router_id, sync_info) = if imsg::has_flag(self.header, subscriber::flag::H) {
             let target_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
             let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
             let pub_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
@@ -648,13 +645,6 @@ where
         } else {
             (None, None)
         };
-
-        // Extensions
-        let mut has_ext = imsg::has_flag(self.header, subscriber::flag::Z);
-        while has_ext {
-            let ext: u8 = self.codec.read(&mut *reader)?;
-            has_ext = extension::skip(reader, "DeclarePreSubscriber", ext)?;
-        }
 
         Ok(subscriber::DeclarePreSubscriber {
             target_router_id,
