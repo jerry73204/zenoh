@@ -320,9 +320,9 @@ pub mod subscriber {
     /// It contains information about the target router (after handover) and a unique sequence number
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SyncInfo {
+        pub subscriber_identity: ZenohIdProto,
         /// Router NodeId after handover
         pub pub_node_id: NodeId,
-        pub subscriber_identity: ZenohIdProto,
         /// Unique sync sequence number for this handover
         pub sync_seq: u32,
     }
@@ -375,45 +375,50 @@ pub mod subscriber {
 
     /// ```text
     /// Flags:
+    /// - H: HandoverInfo   If H==1 then HandoverInfo (tgt_router_id, sync_info) is present
     /// - N: Named          If N==1 then the key expr has name/suffix
     /// - M: Mapping        if M==1 then key expr mapping is the one declared by the sender, else it is the one declared by the receiver
     /// - Z: Extension      If Z==1 then at least one extension is present
     ///
     /// 7 6 5 4 3 2 1 0
     /// +-+-+-+-+-+-+-+-+
-    /// |Z|M|N|D_PRESUB |
+    /// |Z|M|N|H|DPRESUB|
     /// +---------------+
-    /// ~tgt_node_id:z16~
-    /// +---------------+
-    /// ~ sync_seq:z32  ~
+    /// ~  subs_id:z32  ~
     /// +---------------+
     /// ~ key_scope:z16 ~
     /// +---------------+
-    /// ~  key_suffix   ~  if N==1 -- <u8;z16>
+    /// ~  key_suffix   ~  if N==1
+    /// +---------------+
+    /// ~ est_time:z64  ~
+    /// +---------------+
+    /// --- Handover Info (if H==1) ---
+    /// ~ tgt_node_id:z16 ~
     /// +---------------+
     /// ~ subscriber_id ~
     /// +---------------+
-    /// ~pub_router_id:z16~
+    /// ~ pub_router_id:z16 ~
     /// +---------------+
-    /// ~ est_time:z64  ~
+    /// ~  sync_seq:z32   ~
     /// +---------------+
     /// ~  [decl_exts]  ~  if Z==1
     /// +---------------+
     ///
     /// Field details:
-    /// - tgt_node_id: Target router NodeId (after handover) using variable-length encoding (1-3 bytes for z16)
-    /// - sync_seq: Handover synchronization sequence number using variable-length encoding (1-5 bytes for z32)
-    /// - key_scope: Key expression scope using variable-length encoding (1-3 bytes for z16)
-    /// - key_suffix: Optional key suffix if N==1, format <u8;z16> where u8 is length prefix
-    /// - subscriber_id: ZenohIdProto - fixed 16 bytes representing the subscriber's Zenoh ID (vehicle client)
-    /// - pub_router_id: Publisher router NodeId using variable-length encoding (1-3 bytes for z16)
-    /// - est_time: Estimated time as Duration in milliseconds using variable-length encoding (1-9 bytes for z64)
-    /// - [decl_exts]: Optional extensions if Z==1
+    /// - subs_id: The unique ID for this pre-subscription.
+    /// - key_scope/key_suffix: The key expression for the pre-subscription.
+    /// - est_time: The estimated time until the handover occurs, in milliseconds.
+    /// - Handover Info (if H==1):
+    ///   - tgt_node_id: The NodeId of the router the client is expected to connect to after handover.
+    ///   - subscriber_id: The ZenohId of the client initiating the pre-subscription.
+    ///   - pub_router_id: The NodeId of the router that will publish the data. Added by the network.
+    ///   - sync_seq: A sequence number for the handover process. Added by the network.
+    /// - [decl_exts]: Optional extensions if Z==1.
     /// ```
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct DeclarePreSubscriber {
-        pub target_router_id: NodeId,
-        pub sync_info: SyncInfo,
+        pub target_router_id: Option<NodeId>,
+        pub sync_info: Option<SyncInfo>,
         pub id: SubscriberId,
         pub wire_expr: WireExpr<'static>,
         pub estimated_time: Duration,

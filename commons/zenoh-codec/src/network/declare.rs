@@ -568,19 +568,25 @@ where
         if wire_expr.has_suffix() {
             header |= subscriber::flag::N;
         }
+        let has_handover_info = target_router_id.is_some() && sync_info.is_some();
+        if has_handover_info {
+            header |= 0x10; // H flag
+        }
         self.write(&mut *writer, header)?;
 
         // Body
-        // Write HandoverSyncId fields
-        // Body
-        // Write HandoverSyncId fields
-        self.write(&mut *writer, target_router_id)?;
-        self.write(&mut *writer, &sync_info.pub_node_id)?;
-        self.write(&mut *writer, &sync_info.subscriber_identity)?;
-        self.write(&mut *writer, sync_info.sync_seq)?;
         self.write(&mut *writer, id)?;
         self.write(&mut *writer, wire_expr)?;
         self.write(&mut *writer, estimated_time.as_millis() as u64)?;
+
+        if let (Some(target_router_id_val), Some(sync_info_val)) =
+            (target_router_id.as_ref(), sync_info.as_ref())
+        {
+            self.write(&mut *writer, *target_router_id_val)?;
+            self.write(&mut *writer, &sync_info_val.subscriber_identity)?;
+            self.write(&mut *writer, sync_info_val.pub_node_id)?;
+            self.write(&mut *writer, sync_info_val.sync_seq)?;
+        }
 
         // Extensions
 
@@ -613,17 +619,10 @@ where
             return Err(DidntRead);
         }
 
+        const H_FLAG: u8 = 0x10;
+        let has_handover_info = imsg::has_flag(self.header, H_FLAG);
+
         // Body
-        let target_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
-        // Read HandoverSyncId fields
-        let pub_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
-        let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
-        let sync_seq: u32 = self.codec.read(&mut *reader)?;
-        let sync_info = subscriber::SyncInfo {
-            pub_node_id,
-            subscriber_identity,
-            sync_seq,
-        };
         let id: subscriber::SubscriberId = self.codec.read(&mut *reader)?;
         let ccond = Zenoh080Condition::new(imsg::has_flag(self.header, subscriber::flag::N));
         let mut wire_expr: WireExpr<'static> = ccond.read(&mut *reader)?;
@@ -634,6 +633,21 @@ where
         };
         let millis: u64 = self.codec.read(&mut *reader)?;
         let estimated_time = Duration::from_millis(millis);
+
+        let (target_router_id, sync_info) = if has_handover_info {
+            let target_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+            let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
+            let pub_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+            let sync_seq: u32 = self.codec.read(&mut *reader)?;
+            let sync_info = subscriber::SyncInfo {
+                subscriber_identity,
+                pub_node_id,
+                sync_seq,
+            };
+            (Some(target_router_id), Some(sync_info))
+        } else {
+            (None, None)
+        };
 
         // Extensions
         let mut has_ext = imsg::has_flag(self.header, subscriber::flag::Z);
