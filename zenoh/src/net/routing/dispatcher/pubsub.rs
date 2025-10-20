@@ -526,9 +526,8 @@ pub fn route_data(
     mut msg: Push,
     reliability: Reliability,
 ) {
-    // println!("route_data in dispatcher");
-    // println!("Face: {:#?}", face);
-    // println!("Message's wire_expr (if scope == 0, it will only show suffix):{:#?}", &msg.wire_expr);
+    tracing::trace!("route_data in dispatcher");
+    tracing::trace!("Face: {:#?}", face);
     let tables = zread!(tables_ref.tables);
     match tables
         .get_mapping(face, &msg.wire_expr.scope, msg.wire_expr.mapping)
@@ -558,6 +557,7 @@ pub fn route_data(
                 let route = get_data_route(&tables, face, &res, &mut expr, msg.ext_nodeid.node_id);
 
                 if !route.is_empty() {
+                    tracing::trace!("route is not empty: {:?}", route);
                     treat_timestamp!(&tables.hlc, msg.payload, tables.drop_future_timestamp);
 
                     if route.len() == 1 {
@@ -573,10 +573,9 @@ pub fn route_data(
                             } else {
                                 inc_stats!(face, tx, admin, msg.payload)
                             }
-                            // println!("Now is going to Push the message");
-                            // println!("Outgoing interface: {:#?}", &outface);
-                            // println!("the WireExpr in the route: {:#?}", key_expr);
-                            // println!("the context node_id: {}", context);
+                            println!("Now is going to Push the message");
+                            println!("Outgoing interface: {:#?}", &outface);
+                            println!("the context node_id: {}", context);
                             outface.primitives.send_push(
                                 Push {
                                     wire_expr: key_expr.into(),
@@ -607,11 +606,11 @@ pub fn route_data(
                             } else {
                                 inc_stats!(face, tx, admin, msg.payload)
                             }
-                            // println!("In tables.whatami == WhatAmI::Router part");
-                            // println!("Now is going to Push the message");
-                            // println!("Outgoing interface: {:#?}", &outface);
-                            // println!("the WireExpr in the route: {:#?}", key_expr);
-                            // println!("the context node_id: {}", context);
+                            println!("In tables.whatami == WhatAmI::Router part");
+                            println!("Now is going to Push the message");
+                            println!("Outgoing interface: {:#?}", &outface);
+                            println!("the WireExpr in the route: {:#?}", key_expr);
+                            println!("the context node_id: {}", context);
                             outface.primitives.send_push(
                                 Push {
                                     wire_expr: key_expr,

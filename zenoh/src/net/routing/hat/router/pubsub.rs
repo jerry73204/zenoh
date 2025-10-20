@@ -396,6 +396,9 @@ fn register_router_presubscription(
             estimated_time,
         );
     }
+
+    // // Propagate subscription to clients
+    // propagate_simple_subscription(tables, res, sub_info, face, send_declare);
 }
 
 fn declare_router_subscription(
@@ -521,7 +524,7 @@ fn declare_simple_presubscription(
     let zid = tables.zid;
     let subscriber_identity = face.zid;
     //temporary fix it here
-    let target_router_id = match ZenohIdProto::from_str("bef96187ff749ce9379ef4257d963e18") {
+    let target_router_id = match ZenohIdProto::from_str("c7e03633b8e7a3a65e14fc8185587de3") {
         Ok(id) => id,
         Err(_) => {
             tracing::error!("Invalid hardcoded ZenohIdProto in declare_simple_presubscription");
