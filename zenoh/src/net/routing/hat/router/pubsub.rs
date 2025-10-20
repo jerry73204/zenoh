@@ -380,6 +380,7 @@ fn register_router_presubscription(
             tracing::trace!("target_router: {:?}", target_router);
             res_hat_mut!(res).router_subs.insert(target_router);
             tracing::trace!("register_router_presubscription for {} and {}",router, target_router);
+            hat_mut!(tables).router_subs.insert(res.clone());
         }
         // Propagate subscription to routers
 
