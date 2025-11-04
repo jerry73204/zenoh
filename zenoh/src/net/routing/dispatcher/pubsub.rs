@@ -230,6 +230,21 @@ pub(crate) fn declare_presubscription(
     }
 }
 
+
+pub(crate) fn declare_routeupdate(
+    hat_code: &(dyn HatTrait + Send + Sync),
+    tables: &TablesLock,
+    face: &mut Arc<FaceState>,
+    pub_router_id: NodeId,
+    expr: &WireExpr,
+    estimated_time: Duration,
+    sub_info: &SubscriberInfo,
+    node_id: NodeId,
+    send_declare: &mut SendDeclare,
+){
+
+}
+
 pub(crate) fn undeclare_subscription(
     hat_code: &(dyn HatTrait + Send + Sync),
     tables: &TablesLock,

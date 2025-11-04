@@ -424,6 +424,10 @@ impl InterceptorTrait for IngressAclEnforcer {
                 body: DeclareBody::DeclarePreSubscriber(_),
                 ..
             }) => {}
+            NetworkBody::Declare(Declare {
+                body: DeclareBody::DeclareRouteUpdate(_),
+                ..
+            }) => {}
             // Unfiltered remaining message types
             NetworkBody::Interest(_) | NetworkBody::OAM(_) | NetworkBody::ResponseFinal(_) => {}
         }
@@ -512,6 +516,10 @@ impl InterceptorTrait for EgressAclEnforcer {
             }
             NetworkBody::Declare(Declare {
                 body: DeclareBody::DeclarePreSubscriber(_),
+                ..
+            }) => {}
+            NetworkBody::Declare(Declare {
+                body: DeclareBody::DeclareRouteUpdate(_),
                 ..
             }) => {}
             NetworkBody::Declare(Declare {

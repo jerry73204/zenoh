@@ -2886,6 +2886,9 @@ impl Primitives for WeakSession {
             zenoh_protocol::network::DeclareBody::DeclarePreSubscriber(m) => {
                 trace!("recv DeclarePreSubscriber {:?}", m);
             },
+            zenoh_protocol::network::DeclareBody::DeclareRouteUpdate(m) => {
+                trace!("recv DeclareRouteUpdate {:?}", m);
+            },
             DeclareBody::DeclareFinal(DeclareFinal) => {
                 trace!("recv DeclareFinal {:?}", msg.interest_id);
                 if let Some(interest_id) = msg.interest_id {

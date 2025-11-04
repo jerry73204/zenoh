@@ -362,6 +362,24 @@ impl Primitives for Face {
                     p.send_declare(m);
                 }
             }
+            zenoh_protocol::network::DeclareBody::DeclareRouteUpdate(m) => {
+                let mut declares = vec![];
+                declare_routeupdate(
+                    ctrl_lock.as_ref(),
+                    &self.tables,
+                    &mut self.state.clone(),
+                    m.pub_router_id,
+                    &m.wire_expr,
+                    m.estimated_time,
+                    &SubscriberInfo,
+                    msg.ext_nodeid.node_id,
+                    &mut |p, m| declares.push((p.clone(), m)),
+                );
+                drop(ctrl_lock);
+                for (p, m) in declares {
+                    p.send_declare(m);
+                }
+            }
             zenoh_protocol::network::DeclareBody::UndeclareSubscriber(m) => {
                 let mut declares = vec![];
                 undeclare_subscription(

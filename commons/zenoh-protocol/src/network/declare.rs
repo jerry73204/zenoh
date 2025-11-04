@@ -92,6 +92,7 @@ pub mod id {
     pub const D_FINAL: u8 = 0x1A;
 
     pub const D_PRESUBSCRIBER: u8 = 0x08;
+    pub const D_ROUTEUPDATE: u8 = 0x09;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +102,7 @@ pub enum DeclareBody {
     DeclareSubscriber(DeclareSubscriber),
     UndeclareSubscriber(UndeclareSubscriber),
     DeclarePreSubscriber(DeclarePreSubscriber),
+    DeclareRouteUpdate(DeclareRouteUpdate),
     DeclareQueryable(DeclareQueryable),
     UndeclareQueryable(UndeclareQueryable),
     DeclareToken(DeclareToken),
@@ -421,15 +423,27 @@ pub mod subscriber {
         pub estimated_time: Duration,
     }
 
-    // #[derive(Debug, Clone, PartialEq, Eq)]
-    // pub struct DeclarePreSubscriber_ver2 {
-    //     pub pub_router_id: NodeId,
-    //     pub target_router_id: NodeId,
-    //     pub wire_expr: WireExpr<'static>,
-    //     pub subscriber_identity: ZenohIdProto,
-    //     pub estimated_time: Duration
-    // }
-
+    /// ```text
+    /// Flags:
+    /// - N: Named          If N==1 then the key expr has name/suffix
+    /// - M: Mapping        if M==1 then key expr mapping is the one declared by the sender, else it is the one declared by the receiver
+    /// - Z: Extension      If Z==1 then at least one extension is present
+    ///
+    /// 7 6 5 4 3 2 1 0
+    /// +-+-+-+-+-+-+-+-+
+    /// |Z|M|N|DROUTEUPD|
+    /// +---------------+
+    /// ~ pub_router_id:z16 ~
+    /// +---------------+
+    /// ~ key_scope:z16 ~
+    /// +---------------+
+    /// ~  key_suffix   ~  if N==1
+    /// +---------------+
+    /// ~ est_time:z64  ~
+    /// +---------------+
+    /// ~  [decl_exts]  ~  if Z==1
+    /// +---------------+
+    /// ```
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct DeclareRouteUpdate {
         pub pub_router_id: NodeId,

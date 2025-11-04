@@ -45,6 +45,7 @@ where
             DeclareBody::DeclareSubscriber(r) => self.write(&mut *writer, r)?,
             DeclareBody::UndeclareSubscriber(r) => self.write(&mut *writer, r)?,
             DeclareBody::DeclarePreSubscriber(r) => self.write(&mut *writer, r)?,
+            DeclareBody::DeclareRouteUpdate(r) => self.write(&mut *writer, r)?,
             DeclareBody::DeclareQueryable(r) => self.write(&mut *writer, r)?,
             DeclareBody::UndeclareQueryable(r) => self.write(&mut *writer, r)?,
             DeclareBody::DeclareToken(r) => self.write(&mut *writer, r)?,
@@ -73,6 +74,7 @@ where
             D_SUBSCRIBER => DeclareBody::DeclareSubscriber(codec.read(&mut *reader)?),
             U_SUBSCRIBER => DeclareBody::UndeclareSubscriber(codec.read(&mut *reader)?),
             D_PRESUBSCRIBER => DeclareBody::DeclarePreSubscriber(codec.read(&mut *reader)?),
+            D_ROUTEUPDATE => DeclareBody::DeclareRouteUpdate(codec.read(&mut *reader)?),
             D_QUERYABLE => DeclareBody::DeclareQueryable(codec.read(&mut *reader)?),
             U_QUERYABLE => DeclareBody::UndeclareQueryable(codec.read(&mut *reader)?),
             D_TOKEN => DeclareBody::DeclareToken(codec.read(&mut *reader)?),
@@ -594,6 +596,41 @@ where
     }
 }
 
+// DeclareRouteUpdate
+impl<W> WCodec<&subscriber::DeclareRouteUpdate, &mut W> for Zenoh080
+where
+    W: Writer,
+{
+    type Output = Result<(), DidntWrite>;
+
+    fn write(self, writer: &mut W, x: &subscriber::DeclareRouteUpdate) -> Self::Output {
+        let subscriber::DeclareRouteUpdate {
+            pub_router_id,
+            wire_expr,
+            estimated_time,
+        } = x;
+
+        // Header
+        let mut header = declare::id::D_ROUTEUPDATE;
+        if wire_expr.mapping != Mapping::DEFAULT {
+            header |= subscriber::flag::M;
+        }
+        if wire_expr.has_suffix() {
+            header |= subscriber::flag::N;
+        }
+        self.write(&mut *writer, header)?;
+
+        // Body
+        self.write(&mut *writer, pub_router_id)?;
+        self.write(&mut *writer, wire_expr)?;
+        self.write(&mut *writer, estimated_time.as_millis() as u64)?;
+
+        // Extensions
+
+        Ok(())
+    }
+}
+
 impl<R> RCodec<subscriber::DeclarePreSubscriber, &mut R> for Zenoh080
 where
     R: Reader,
@@ -650,6 +687,59 @@ where
             target_router_id,
             sync_info,
             id,
+            wire_expr,
+            estimated_time,
+        })
+    }
+}
+
+// DeclareRouteUpdate
+impl<R> RCodec<subscriber::DeclareRouteUpdate, &mut R> for Zenoh080
+where
+    R: Reader,
+{
+    type Error = DidntRead;
+
+    fn read(self, reader: &mut R) -> Result<subscriber::DeclareRouteUpdate, Self::Error> {
+        let header: u8 = self.read(&mut *reader)?;
+        let codec = Zenoh080Header::new(header);
+
+        codec.read(reader)
+    }
+}
+
+impl<R> RCodec<subscriber::DeclareRouteUpdate, &mut R> for Zenoh080Header
+where
+    R: Reader,
+{
+    type Error = DidntRead;
+
+    fn read(self, reader: &mut R) -> Result<subscriber::DeclareRouteUpdate, Self::Error> {
+        if imsg::mid(self.header) != declare::id::D_ROUTEUPDATE {
+            return Err(DidntRead);
+        }
+
+        // Body
+        let pub_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+        let ccond = Zenoh080Condition::new(imsg::has_flag(self.header, subscriber::flag::N));
+        let mut wire_expr: WireExpr<'static> = ccond.read(&mut *reader)?;
+        wire_expr.mapping = if imsg::has_flag(self.header, subscriber::flag::M) {
+            Mapping::Sender
+        } else {
+            Mapping::Receiver
+        };
+        let millis: u64 = self.codec.read(&mut *reader)?;
+        let estimated_time = Duration::from_millis(millis);
+
+        // Extensions
+        let mut has_ext = imsg::has_flag(self.header, subscriber::flag::Z);
+        while has_ext {
+            let ext: u8 = self.codec.read(&mut *reader)?;
+            has_ext = extension::skip(reader, "DeclareRouteUpdate", ext)?;
+        }
+
+        Ok(subscriber::DeclareRouteUpdate {
+            pub_router_id,
             wire_expr,
             estimated_time,
         })

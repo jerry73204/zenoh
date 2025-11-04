@@ -293,7 +293,7 @@ fn propagate_sourced_presubscription(
     let net = hat!(tables).get_net(net_type).unwrap();
     match (net.get_idx(source), net.get_idx(target_router)) {
         (Some(tree_sid), Some(target_router_id)) => {
-            print!("propogate_source_presubscription");
+            print!("propagate_source_presubscription");
             print!("This is net: {:#?}", &net);
             print!("This is net trees: {:#?}", &net.trees[tree_sid.index()]);
             if net.trees.len() > tree_sid.index() {
@@ -382,19 +382,24 @@ fn register_router_presubscription(
             tracing::trace!("register_router_presubscription for {} and {}",router, target_router);
             hat_mut!(tables).router_subs.insert(res.clone());
         }
-        // Propagate subscription to routers
+        if target_router == tables.zid {
+            // Trigger the DataRouteUpdate
 
-        propagate_sourced_presubscription(
-            tables,
-            res,
-            sub_info,
-            Some(face),
-            &router,
-            WhatAmI::Router,
-            &target_router,
-            sync_info,
-            estimated_time,
-        );
+        }
+        else{
+            // Propagate subscription to routers
+            propagate_sourced_presubscription(
+                tables,
+                res,
+                sub_info,
+                Some(face),
+                &router,
+                WhatAmI::Router,
+                &target_router,
+                sync_info,
+                estimated_time,
+            );
+        }
     }
 
     // // Propagate subscription to clients
