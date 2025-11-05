@@ -369,6 +369,7 @@ impl Primitives for Face {
                     &self.tables,
                     &mut self.state.clone(),
                     m.pub_router_id,
+                    m.prev_router_id,
                     &m.wire_expr,
                     m.estimated_time,
                     &SubscriberInfo,

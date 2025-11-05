@@ -324,7 +324,7 @@ pub mod subscriber {
     pub struct SyncInfo {
         pub subscriber_identity: ZenohIdProto,
         /// Router NodeId after handover
-        pub pub_node_id: NodeId,
+        pub pub_router_id: NodeId,
         /// Unique sync sequence number for this handover
         pub sync_seq: u32,
     }
@@ -435,6 +435,8 @@ pub mod subscriber {
     /// +---------------+
     /// ~ pub_router_id:z16 ~
     /// +---------------+
+    /// ~ source_router_id:z16 ~
+    /// +---------------+
     /// ~ key_scope:z16 ~
     /// +---------------+
     /// ~  key_suffix   ~  if N==1
@@ -447,6 +449,7 @@ pub mod subscriber {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct DeclareRouteUpdate {
         pub pub_router_id: NodeId,
+        pub prev_router_id: NodeId,
         pub wire_expr: WireExpr<'static>,
         pub estimated_time: Duration,
     }

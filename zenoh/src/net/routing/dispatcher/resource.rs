@@ -808,6 +808,7 @@ impl Resource {
         }
     }
 
+    // To Be Removed
     #[inline]
     pub fn check_resource(from: &Arc<Resource>, suffix: &str) -> Arc<Resource> {
         if suffix.is_empty() {

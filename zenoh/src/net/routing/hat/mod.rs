@@ -186,6 +186,22 @@ pub(crate) trait HatPubSubTrait {
         send_declare: &mut SendDeclare,
     ) { }
 
+    fn declare_routeupdate(
+        &self,
+        tables: &mut Tables,
+        face: &mut Arc<FaceState>,
+        pub_router_id: NodeId,
+        prev_router_id: NodeId,
+        estimated_time: Duration,
+        res: Option<Arc<Resource>>,
+        sub_info: &SubscriberInfo,
+        node_id: NodeId,
+        send_declare: &mut SendDeclare,
+    ) -> Option<Arc<Resource>>
+    {
+        res
+    }
+
     fn undeclare_subscription(
         &self,
         tables: &mut Tables,

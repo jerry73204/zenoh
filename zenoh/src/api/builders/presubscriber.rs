@@ -249,7 +249,7 @@ where
 impl Resolvable for PreSubscriberBuilder<'_, '_, Callback<Sample>, true> {
     type To = ZResult<()>;
 }
-
+// TODO: fix this into 'declare_presubscriber_inner'
 impl Wait for PreSubscriberBuilder<'_, '_, Callback<Sample>, true> {
     fn wait(self) -> <Self as Resolvable>::To {
         self.session

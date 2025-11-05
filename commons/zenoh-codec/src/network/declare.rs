@@ -586,7 +586,7 @@ where
         {
             self.write(&mut *writer, *target_router_id_val)?;
             self.write(&mut *writer, &sync_info_val.subscriber_identity)?;
-            self.write(&mut *writer, sync_info_val.pub_node_id)?;
+            self.write(&mut *writer, sync_info_val.pub_router_id)?;
             self.write(&mut *writer, sync_info_val.sync_seq)?;
         }
 
@@ -606,6 +606,7 @@ where
     fn write(self, writer: &mut W, x: &subscriber::DeclareRouteUpdate) -> Self::Output {
         let subscriber::DeclareRouteUpdate {
             pub_router_id,
+            prev_router_id,
             wire_expr,
             estimated_time,
         } = x;
@@ -622,6 +623,7 @@ where
 
         // Body
         self.write(&mut *writer, pub_router_id)?;
+        self.write(&mut *writer, prev_router_id)?;
         self.write(&mut *writer, wire_expr)?;
         self.write(&mut *writer, estimated_time.as_millis() as u64)?;
 
@@ -671,11 +673,11 @@ where
         let (target_router_id, sync_info) = if imsg::has_flag(self.header, subscriber::flag::H) {
             let target_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
             let subscriber_identity: ZenohIdProto = self.codec.read(&mut *reader)?;
-            let pub_node_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+            let pub_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
             let sync_seq: u32 = self.codec.read(&mut *reader)?;
             let sync_info = subscriber::SyncInfo {
                 subscriber_identity,
-                pub_node_id,
+                pub_router_id,
                 sync_seq,
             };
             (Some(target_router_id), Some(sync_info))
@@ -721,6 +723,7 @@ where
 
         // Body
         let pub_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
+        let prev_router_id: subscriber::NodeId = self.codec.read(&mut *reader)?;
         let ccond = Zenoh080Condition::new(imsg::has_flag(self.header, subscriber::flag::N));
         let mut wire_expr: WireExpr<'static> = ccond.read(&mut *reader)?;
         wire_expr.mapping = if imsg::has_flag(self.header, subscriber::flag::M) {
@@ -740,6 +743,7 @@ where
 
         Ok(subscriber::DeclareRouteUpdate {
             pub_router_id,
+            prev_router_id,
             wire_expr,
             estimated_time,
         })

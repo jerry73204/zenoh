@@ -838,6 +838,7 @@ struct HatContext {
     linkstatepeer_qabls: HashMap<ZenohIdProto, QueryableInfoType>,
     router_tokens: HashSet<ZenohIdProto>,
     linkstatepeer_tokens: HashSet<ZenohIdProto>,
+    presubscriptions: HashMap<ZenohIdProto, u32>,
     // presubscription: 對下家的mapping id, 第一次丟zid，第二個丟subscription id(), 建立好Wireexpr resource
     // 並傳送Ack number（無縫接軌，讓他知道備貨到哪號）,困難點是：Ack來自transport
     // 下家也要對 publisher 做 subscription
@@ -856,6 +857,7 @@ impl HatContext {
             linkstatepeer_qabls: HashMap::new(),
             router_tokens: HashSet::new(),
             linkstatepeer_tokens: HashSet::new(),
+            presubscriptions: HashMap::new(),
         }
     }
 }

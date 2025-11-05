@@ -21,11 +21,10 @@ use std::{
 
 use petgraph::graph::NodeIndex;
 use zenoh_protocol::{
-    core::{key_expr::OwnedKeyExpr, WhatAmI, ZenohIdProto},
+    core::{WhatAmI, ZenohIdProto, key_expr::OwnedKeyExpr},
     network::{
         declare::{
-            common::ext::WireExprType, ext, Declare, DeclareBody, DeclarePreSubscriber,
-            DeclareSubscriber, SubscriberId, SyncInfo, UndeclareSubscriber,
+            Declare, DeclareBody, DeclarePreSubscriber, DeclareRouteUpdate, DeclareSubscriber, SubscriberId, SyncInfo, UndeclareSubscriber, common::ext::WireExprType, ext
         },
         interest::{InterestId, InterestMode},
     },
@@ -41,16 +40,13 @@ use super::{
 #[cfg(feature = "unstable")]
 use crate::key_expr::KeyExpr;
 use crate::net::routing::{
-    dispatcher::{
+    RoutingContext, dispatcher::{
         face::FaceState,
         interests::RemoteInterest,
-        pubsub::{update_data_routes_from, update_matches_data_routes, SubscriberInfo},
+        pubsub::{SubscriberInfo, update_data_routes_from, update_matches_data_routes},
         resource::{NodeId, Resource, SessionContext},
         tables::{Route, RoutingExpr, Tables},
-    },
-    hat::{CurrentFutureTrait, HatPubSubTrait, SendDeclare, Sources},
-    router::RoutesIndexes,
-    RoutingContext,
+    }, hat::{CurrentFutureTrait, HatPubSubTrait, SendDeclare, Sources}, router::{RoutesIndexes, declare_routeupdate}
 };
 
 #[inline]
@@ -144,6 +140,64 @@ fn send_presubscription_to_target_direction(
                 None => tracing::trace!("Unable to find face for zid {}", net.graph[direction].zid),
             }
         }
+    }
+}
+
+#[inline]
+fn send_routeupdate_to_convergence(
+    tables: &Tables,
+    net: &Network,
+    presub_tree_sid: usize,
+    originsub_tree_sid: usize,
+    pub_router_id: NodeId,
+    estimated_time: Duration,
+    res: &Arc<Resource>,
+    src_face: Option<&Arc<FaceState>>,
+    _sub_info: &SubscriberInfo,
+    routing_context: NodeId,
+) {
+    let presub_tree = &net.trees[presub_tree_sid];
+    let originsub_tree = &net.trees[originsub_tree_sid];
+    if let Some((new_direction, old_direction)) = presub_tree.directions[pub_router_id as usize].zip(originsub_tree.directions[pub_router_id as usize]) {
+        // if new_direction == old_direction{
+        //     tracing::trace!("convergence point");
+        //     // converge_point!
+        // }
+        // else{
+            let direction = new_direction;
+            if net.graph.contains_node(direction) {
+                match tables.get_face(&net.graph[direction].zid).cloned() {
+                    Some(mut someface) => {
+                        if src_face
+                            .map(|src_face| someface.id != src_face.id)
+                            .unwrap_or(true)
+                        {
+                            let push_declaration = push_declaration_profile(tables, &someface);
+                            let key_expr = Resource::decl_key(res, &mut someface, push_declaration);
+                            tracing::trace!("send_routeupdate_to_convergence {}",someface.zid);
+                            someface.primitives.send_declare(RoutingContext::with_expr(
+                                Declare {
+                                    interest_id: None,
+                                    ext_qos: ext::QoSType::DECLARE,
+                                    ext_tstamp: None,
+                                    ext_nodeid: ext::NodeIdType {
+                                        node_id: routing_context,
+                                    },
+                                    body: DeclareBody::DeclareRouteUpdate(DeclareRouteUpdate {
+                                        pub_router_id,
+                                        prev_router_id: originsub_tree_sid as u16,
+                                        wire_expr: key_expr,
+                                        estimated_time,
+                                    }),
+                                },
+                                res.expr(),
+                            ));
+                        }
+                    }
+                    None => tracing::trace!("Unable to find face for zid {}", net.graph[direction].zid),
+                }
+            }
+        // }
     }
 }
 
@@ -327,6 +381,56 @@ fn propagate_sourced_presubscription(
     }
 }
 
+fn propagate_routeupdate(
+    tables: &Tables,
+    res: &Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    src_face: Option<&Arc<FaceState>>,
+    source: &ZenohIdProto,
+    pub_router: &ZenohIdProto,
+    prev_router: &ZenohIdProto,
+    estimated_time: Duration,
+    net_type: WhatAmI,
+) {
+    tracing::trace!("propagate_routeupdate");
+    let net = hat!(tables).get_net(net_type).unwrap();
+    match (net.get_idx(source), net.get_idx(prev_router), net.get_idx(pub_router)) {
+        (Some(presub_tree_sid), Some(originsub_tree_sid), Some(pub_router_id)) => {
+            tracing::trace!("propagate_routeupdate");
+            tracing::trace!("This is presub trees: {:#?}", &net.trees[presub_tree_sid.index()]);
+            tracing::trace!("This is originsub trees: {:#?}", &net.trees[originsub_tree_sid.index()]);
+            tracing::trace!("The pub_router_id: {}", pub_router_id.index());
+            if net.trees.len() > presub_tree_sid.index() && net.trees.len() > originsub_tree_sid.index(){
+                send_routeupdate_to_convergence(
+                    tables,
+                    net,
+                    presub_tree_sid.index(),
+                    originsub_tree_sid.index(),
+                    pub_router_id.index() as NodeId,
+                    estimated_time,
+                    res,
+                    src_face,
+                    sub_info,
+                    presub_tree_sid.index() as NodeId,
+                );
+            } else {
+                tracing::trace!(
+                    "Propagating sub {} and sub {}: tree for node {} sid:{} not yet ready",
+                    res.expr(),
+                    presub_tree_sid.index(), originsub_tree_sid.index(),
+                    pub_router_id.index()
+                );
+            }
+        }
+        (_, _, _) => tracing::error!(
+            "Error propagating sub {}: cannot get index of {} and {}!",
+            res.expr(),
+            source,
+            prev_router
+        ),
+    }
+}
+
 fn register_router_subscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
@@ -358,6 +462,76 @@ fn register_router_subscription(
     propagate_simple_subscription(tables, res, sub_info, face, send_declare);
 }
 
+// fn initiate_declare_routeupdate(
+//     tables: &mut Tables,
+//     res:
+//     face: &mut Arc<FaceState>,
+//     sync_info: SyncInfo,
+//     estimated_time: Duration,
+//     res: &mut Arc<Resource>,
+//     sub_info: &SubscriberInfo,
+//     router: ZenohIdProto,
+//     net_type: WhatAmI,
+//     send_declare: &mut SendDeclare,
+// ) {
+
+fn presubscription_preparation(
+    tables: &mut Tables,
+    face: &mut Arc<FaceState>,
+    sync_info: SyncInfo,
+    estimated_time: Duration,
+    res: &mut Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    router: ZenohIdProto,
+    net_type: WhatAmI,
+    send_declare: &mut SendDeclare,
+) {
+    tracing::trace!("presubscription_preparation");
+    // 1107: don't need to deconstruct here
+    let SyncInfo {
+        subscriber_identity,
+        pub_router_id,
+        sync_seq,
+    } = sync_info;
+    //
+    res_hat_mut!(res).presubscriptions.insert(subscriber_identity, sync_seq);
+    // First trigger the route update sending
+    // let prev_router_id = get_
+    // tables.get_face(&tables.zid).cloned().unwrap().primitives.send_declare(RoutingContext::with_expr(
+    //                             Declare {
+    //                                 interest_id: None,
+    //                                 ext_qos: ext::QoSType::DECLARE,
+    //                                 ext_tstamp: None,
+    //                                 ext_nodeid: ext::NodeIdType {
+    //                                     node_id: 0,
+    //                                 },
+    //                                 body: DeclareBody::DeclareRouteUpdate(DeclareRouteUpdate {
+    //                                     pub_router_id,
+    //                                     prev_router_id: originsub_tree_sid as u16,
+    //                                     wire_expr: key_expr,
+    //                                     estimated_time,
+    //                                 }),
+    //                             },
+    //                             res.expr(),
+    //                         ));
+    // 1107: No need to change it here, remove get_router, pass it inside
+    if let Some(pub_router) = get_router(tables, face, pub_router_id) {
+        propagate_routeupdate(
+            tables,
+            res,
+            sub_info,
+            None,
+            &tables.zid,
+            &pub_router,
+            &router,
+            estimated_time,
+            WhatAmI::Router
+        );
+    }
+    // face prebuilt for the comming client
+
+}
+
 fn register_router_presubscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
@@ -383,27 +557,78 @@ fn register_router_presubscription(
             hat_mut!(tables).router_subs.insert(res.clone());
         }
         if target_router == tables.zid {
-            // Trigger the DataRouteUpdate
-
+            // Change the key expression
+            if let Some(key_expr) = res.expr().strip_prefix("%/"){
+                if let Some(mut res) = Resource::get_resource(&tables.root_res, &key_expr){
+                    tracing::trace!("After stripping the pre-subscribe prefix, res: {}", res.expr());
+                    // Trigger the DataRouteUpdate
+                    presubscription_preparation(
+                        tables,
+                        face,
+                        sync_info,
+                        estimated_time,
+                        &mut res,
+                        sub_info,
+                        router,
+                        WhatAmI::Router,
+                        send_declare
+                    );
+                }
+            }
         }
         else{
             // Propagate subscription to routers
-            propagate_sourced_presubscription(
-                tables,
-                res,
-                sub_info,
-                Some(face),
-                &router,
-                WhatAmI::Router,
-                &target_router,
-                sync_info,
-                estimated_time,
-            );
+            // 1107: The sync_info can be built here, or before the send
+            if let Some(pub_router_id) = get_router_id(tables, face, sync_info.pub_router_id){
+                let sync_info = SyncInfo {
+                    pub_router_id:pub_router_id,
+                    ..sync_info
+                };
+                propagate_sourced_presubscription(
+                    tables,
+                    res,
+                    sub_info,
+                    Some(face),
+                    &router,
+                    WhatAmI::Router,
+                    &target_router,
+                    sync_info,
+                    estimated_time,
+                );
+            }
         }
     }
 
     // // Propagate subscription to clients
     // propagate_simple_subscription(tables, res, sub_info, face, send_declare);
+}
+
+fn register_router_prerouteupdate(
+    tables: &mut Tables,
+    face: &mut Arc<FaceState>,
+    pub_router: ZenohIdProto,
+    prev_router: ZenohIdProto,
+    estimated_time: Duration,
+    res: &mut Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    router: ZenohIdProto,
+    send_declare: &mut SendDeclare,
+) {
+    tracing::trace!("register_router_prerouteupdate");
+    // first insert the router into the subscriber
+    tracing::trace!("res: {}, res.router_subs: {:?}", res.expr(), res_hat!(res).router_subs);
+    if !res_hat!(res).router_subs.contains(&router) {
+        // Register router subscription
+        {
+            res_hat_mut!(res).router_subs.insert(router);
+            hat_mut!(tables).router_subs.insert(res.clone());
+        }
+        // calculate if it is the convergence point
+        // if not, propagate the routeupdate packet to the publisher
+        // Propagate subscription to routers
+        // Move this out(todo)
+    }
+    propagate_routeupdate(tables, res, sub_info, Some(face), &router, &pub_router, &prev_router, estimated_time, WhatAmI::Router);
 }
 
 fn declare_router_subscription(
@@ -529,20 +754,21 @@ fn declare_simple_presubscription(
     let zid = tables.zid;
     let subscriber_identity = face.zid;
     //temporary fix it here
-    let target_router_id = match ZenohIdProto::from_str("c7e03633b8e7a3a65e14fc8185587de3") {
+    let target_router = match ZenohIdProto::from_str("12810fef4c61448a81e14160be8c8f3a") {
         Ok(id) => id,
         Err(_) => {
             tracing::error!("Invalid hardcoded ZenohIdProto in declare_simple_presubscription");
             return;
         }
     };
-    let pub_node_id = 2;  // Filled in by the subscription (todo!)
+    let pub_router_id = 2;  // Filled in by the subscription (todo!)
     let sync_seq = 123;
-    let sync_info = SyncInfo { subscriber_identity, pub_node_id, sync_seq };
+    let sync_info = SyncInfo { subscriber_identity, pub_router_id, sync_seq };
+    // 1107: Do not build the SyncInfo here, pass the component subscriber_identity, pub_router, sync_seq
     register_router_presubscription(
         tables,
         face,
-        target_router_id,
+        target_router,
         sync_info,
         estimated_time,
         res,
@@ -1353,12 +1579,14 @@ impl HatPubSubTrait for HatCode {
                 let Some((target_router_id, sync_info)) = target_router_id.zip(sync_info) else { return };
                 let router_opt = get_router(tables, face, node_id);
                 let target_opt = get_router(tables, face, target_router_id);
-                let pub_node_opt = get_router_id(tables, face, sync_info.pub_node_id);
-                if let (Some(router), Some(target_router), Some(pub_node_id)) = (router_opt, target_opt, pub_node_opt) {
-                    let sync_info = SyncInfo {
-                        pub_node_id: pub_node_id,
-                        ..sync_info
-                    };
+                // 1107: Change the get_router_id --> get_router, first get the ZenohIdProto 'pub_opt'
+                let pub_opt = get_router(tables, face, sync_info.pub_router_id);
+                if let (Some(router), Some(target_router), Some(_)) = (router_opt, target_opt, pub_opt) {
+                    // 1107: Do not change the sync_info SyncInfo here
+                    // let sync_info = SyncInfo {
+                    //     pub_router_id:pub_router_id,
+                    //     ..sync_info
+                    // };
                     declare_router_presubscription(
                         tables,
                         face,
@@ -1378,6 +1606,42 @@ impl HatPubSubTrait for HatCode {
                 declare_simple_presubscription(tables, face, estimated_time, id, res, sub_info, send_declare);
             }
             _ => {}
+        }
+    }
+
+    fn declare_routeupdate(
+        &self,
+        tables: &mut Tables,
+        face: &mut Arc<FaceState>,
+        pub_router_id: NodeId,
+        prev_router_id: NodeId,
+        estimated_time: Duration,
+        res: Option<Arc<Resource>>,
+        sub_info: &SubscriberInfo,
+        node_id: NodeId,
+        send_declare: &mut SendDeclare,
+    ) -> Option<Arc<Resource>>
+    {
+        tracing::trace!("declare_routeupdate");
+        match face.whatami {
+            WhatAmI::Router => {
+                tracing::trace!("declare_routeupdate sent from router");
+                if let Some(mut res) = res {
+                    if let Some((pub_router, prev_router)) = get_router(tables, face, pub_router_id).zip(get_router(tables, face, prev_router_id))  {
+                        if let Some(router) = get_router(tables, face, node_id) {
+                            register_router_prerouteupdate(tables, face, pub_router, prev_router, estimated_time, &mut res, sub_info, router, send_declare);
+                            Some(res)
+                        } else {
+                            None
+                        }
+                    } else{
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None
         }
     }
 

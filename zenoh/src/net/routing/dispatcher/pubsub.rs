@@ -236,13 +236,70 @@ pub(crate) fn declare_routeupdate(
     tables: &TablesLock,
     face: &mut Arc<FaceState>,
     pub_router_id: NodeId,
+    prev_router_id: NodeId,
     expr: &WireExpr,
     estimated_time: Duration,
     sub_info: &SubscriberInfo,
     node_id: NodeId,
     send_declare: &mut SendDeclare,
 ){
+    let res = if expr.is_empty() {
+        None
+    } else {
+        let rtables = zread!(tables.tables);
+        match rtables.get_mapping(face, &expr.scope, expr.mapping) {
+            Some(prefix) => match Resource::get_resource(prefix, expr.suffix.as_ref()) {
+                Some(res) => Some(res),
+                None => {
+                    tracing::error!(
+                        "{} Undeclare unknown subscriber {}{}!",
+                        face,
+                        prefix.expr(),
+                        expr.suffix
+                    );
+                    return;
+                }
+            },
+            None => {
+                tracing::error!(
+                    "{} Undeclare subscriber with unknown scope {}",
+                    face,
+                    expr.scope
+                );
+                return;
+            }
+        }
+    };
+    let mut wtables = zwrite!(tables.tables);
+    if let Some(mut res) =
+        hat_code.declare_routeupdate(&mut wtables, face, pub_router_id, prev_router_id, estimated_time, res, sub_info, node_id, send_declare)
+    {
+        tracing::debug!("{} Undeclare subscriber ({})", face, res.expr());
+        disable_matches_data_routes(&mut wtables, &mut res);
+        drop(wtables);
 
+        let rtables = zread!(tables.tables);
+        let matches_data_routes = compute_matches_data_routes(&rtables, &res);
+        drop(rtables);
+
+        let wtables = zwrite!(tables.tables);
+        for (mut res, data_routes) in matches_data_routes {
+            get_mut_unchecked(&mut res)
+                .context_mut()
+                .update_data_routes(data_routes);
+        }
+        Resource::clean(&mut res);
+        drop(wtables);
+    } else {
+        // NOTE: This is expected behavior if subscriber declarations are denied with ingress ACL interceptor.
+        tracing::debug!("No need to update route");
+    }
+    {
+        let rtables = zread!(tables.tables);
+        println!("hat_code info: {}", hat_code.info(&rtables, face.whatami));
+        println!("Now the resource tree after 'declare_routeupdate' will print");
+        println!("root_res tree {:#?}", rtables._get_root());
+    }
 }
 
 pub(crate) fn undeclare_subscription(
