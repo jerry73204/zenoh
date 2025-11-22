@@ -317,6 +317,7 @@ pub mod subscriber {
 
     pub type SubscriberId = EntityId;
     pub type NodeId = u16;
+    pub type SyncSeq = u32;
 
     /// SyncInfo represents the synchronization identifier between routers during handover
     /// It contains information about the target router (after handover) and a unique sequence number
@@ -326,7 +327,7 @@ pub mod subscriber {
         /// Router NodeId after handover
         pub pub_router_id: NodeId,
         /// Unique sync sequence number for this handover
-        pub sync_seq: u32,
+        pub sync_seq: SyncSeq,
     }
 
     pub mod flag {

@@ -19,13 +19,11 @@
 //! [Click here for Zenoh's documentation](https://docs.rs/zenoh/latest/zenoh)
 use std::{
     any::Any,
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     hash::Hasher,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{Arc, atomic::AtomicU32}, time::Duration,
 };
 
-use backtrace::Symbol;
-use petgraph::visit::FilterNode;
 use token::{token_linkstate_change, token_remove_node, undeclare_simple_token};
 use tracing::{info, debug};
 use zenoh_config::{unwrap_or_default, ModeDependent, WhatAmI, WhatAmIMatcher};
@@ -33,7 +31,7 @@ use zenoh_protocol::{
     common::ZExtBody,
     core::ZenohIdProto,
     network::{
-        declare::{queryable::ext::QueryableInfoType, QueryableId, SubscriberId, TokenId},
+        declare::{queryable::ext::QueryableInfoType, QueryableId, SubscriberId, SyncSeq, TokenId},
         interest::InterestId,
         oam::id::OAM_LINKSTATE,
         Oam,
@@ -61,8 +59,8 @@ use crate::net::{
     protocol::linkstate::LinkStateList,
     routing::{
         dispatcher::{face::Face, interests::RemoteInterest},
-        hat::TREES_COMPUTATION_DELAY_MS,
-        router::{compute_data_routes, compute_query_routes, RoutesIndexes},
+        hat::{HatPubSubTrait, TREES_COMPUTATION_DELAY_MS},
+        router::{RoutesIndexes, SubscriberInfo, compute_data_routes, compute_query_routes, disable_matches_data_routes, compute_matches_data_routes},
     },
     runtime::Runtime,
 };
@@ -169,6 +167,7 @@ struct HatTables {
     linkstatepeer_tokens: HashSet<Arc<Resource>>,
     router_qabls: HashSet<Arc<Resource>>,
     linkstatepeer_qabls: HashSet<Arc<Resource>>,
+    pre_subs: HashMap<ZenohIdProto, Vec<Arc<Resource>>>,
     routers_net: Option<Network>,
     linkstatepeers_net: Option<Network>,
     shared_nodes: Vec<ZenohIdProto>,
@@ -186,6 +185,7 @@ impl HatTables {
             linkstatepeer_qabls: HashSet::new(),
             router_tokens: HashSet::new(),
             linkstatepeer_tokens: HashSet::new(),
+            pre_subs: HashMap::new(),
             routers_net: None,
             linkstatepeers_net: None,
             shared_nodes: vec![],
@@ -391,8 +391,9 @@ impl HatBaseTrait for HatCode {
         tables_ref: &Arc<TablesLock>,
         face: &mut Face,
         transport: &TransportUnicast,
-        _send_declare: &mut SendDeclare,
+        send_declare: &mut SendDeclare,
     ) -> ZResult<()> {
+        tracing::trace!("new_transport_unicast_face, {:?}", face.state);
         let link_id = match face.state.whatami {
             WhatAmI::Router => hat_mut!(tables)
                 .routers_net
@@ -425,6 +426,51 @@ impl HatBaseTrait for HatCode {
             WhatAmI::Peer => {
                 if hat_mut!(tables).full_net(WhatAmI::Peer) {
                     hat_mut!(tables).schedule_compute_trees(tables_ref.clone(), WhatAmI::Peer);
+                }
+            }
+            WhatAmI::Client => {
+                tracing::trace!("new_transport_unicast_face from client");
+                let cli_zid = face.state.zid;
+                tracing::trace!("cli_zid: {}", cli_zid);
+                tracing::trace!("pre_subs in tables: {:?}", hat!(tables).pre_subs);
+                if let Some(res_vec) = hat!(tables).pre_subs.get(&cli_zid).cloned() {
+                    for mut res in res_vec{
+                        if let Some((sub_id,sync_seq)) = res_hat!(res).presubscriptions.get(&cli_zid).cloned(){
+                            let hat_code = self;
+                            let sub_info = &SubscriberInfo;
+                            pubsub::activate_presubscription_to_subscription(
+                                self,
+                                tables,
+                                &mut face.state,
+                                sub_id,
+                                &mut res,
+                                sub_info
+                            );
+                            // compute_data_route
+                            disable_matches_data_routes(tables, &mut res);
+                            // drop(tables);
+
+                            // let rtables = zread!(&tables_ref.tables);
+                            let matches_data_routes = compute_matches_data_routes(&tables, &res);
+                            // drop(rtables);
+
+                            // let wtables = zwrite!(&tables_ref.tables);
+                            // put the compute route path into resource tree
+                            for (mut res, data_routes) in matches_data_routes {
+                                get_mut_unchecked(&mut res)
+                                    .context_mut()
+                                    .update_data_routes(data_routes);
+                            }
+                            // drop(wtables);
+
+                            let estimated_time = Duration::from_millis(3);
+                            let expr = format!("%/{}", res.expr());
+                            if let Some(mut res) = Resource::get_resource(&tables.root_res, &expr){
+                                hat_code.declare_presubscription(tables, &mut face.state, sub_id, None, None, estimated_time, &mut res, sub_info, 0, send_declare);
+                            }
+                        }
+                        // let tables = zwrite!(&tables_ref.tables);
+                    }
                 }
             }
             _ => (),
@@ -838,7 +884,7 @@ struct HatContext {
     linkstatepeer_qabls: HashMap<ZenohIdProto, QueryableInfoType>,
     router_tokens: HashSet<ZenohIdProto>,
     linkstatepeer_tokens: HashSet<ZenohIdProto>,
-    presubscriptions: HashMap<ZenohIdProto, u32>,
+    presubscriptions: HashMap<ZenohIdProto, (SubscriberId, SyncSeq)>,
     // presubscription: 對下家的mapping id, 第一次丟zid，第二個丟subscription id(), 建立好Wireexpr resource
     // 並傳送Ack number（無縫接軌，讓他知道備貨到哪號）,困難點是：Ack來自transport
     // 下家也要對 publisher 做 subscription

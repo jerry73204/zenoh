@@ -222,17 +222,6 @@ pub(crate) trait HatPubSubTrait {
         source_type: WhatAmI,
     ) -> Arc<Route>;
 
-    fn compute_presubscribe_route(
-        &self,
-        tables: &Tables,
-        expr: &mut RoutingExpr,
-        source: NodeId,
-        source_type: WhatAmI,
-    ) -> Arc<Route>{
-        self.compute_data_route(tables, expr, source, source_type)
-        // Default::default()
-    }
-
     fn get_data_routes_entries(&self, tables: &Tables) -> RoutesIndexes;
 
     #[zenoh_macros::unstable]

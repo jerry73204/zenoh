@@ -46,7 +46,7 @@ use crate::net::routing::{
         pubsub::{SubscriberInfo, update_data_routes_from, update_matches_data_routes},
         resource::{NodeId, Resource, SessionContext},
         tables::{Route, RoutingExpr, Tables},
-    }, hat::{CurrentFutureTrait, HatPubSubTrait, SendDeclare, Sources}, router::{RoutesIndexes, declare_routeupdate}
+    }, hat::{CurrentFutureTrait, HatPubSubTrait, SendDeclare, Sources}, router::{RoutesIndexes}
 };
 
 #[inline]
@@ -480,6 +480,7 @@ fn presubscription_preparation(
     face: &mut Arc<FaceState>,
     sync_info: SyncInfo,
     estimated_time: Duration,
+    id: SubscriberId,
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
     router: ZenohIdProto,
@@ -494,7 +495,8 @@ fn presubscription_preparation(
         sync_seq,
     } = sync_info;
     //
-    res_hat_mut!(res).presubscriptions.insert(subscriber_identity, sync_seq);
+    res_hat_mut!(res).presubscriptions.insert(subscriber_identity, (id, sync_seq));
+    hat_mut!(tables).pre_subs.entry(subscriber_identity).or_default().push(res.clone());
     // First trigger the route update sending
     // let prev_router_id = get_
     // tables.get_face(&tables.zid).cloned().unwrap().primitives.send_declare(RoutingContext::with_expr(
@@ -538,6 +540,7 @@ fn register_router_presubscription(
     target_router: ZenohIdProto,
     sync_info: SyncInfo,
     estimated_time: Duration,
+    id: SubscriberId,
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
     router: ZenohIdProto,
@@ -561,12 +564,14 @@ fn register_router_presubscription(
             if let Some(key_expr) = res.expr().strip_prefix("%/"){
                 if let Some(mut res) = Resource::get_resource(&tables.root_res, &key_expr){
                     tracing::trace!("After stripping the pre-subscribe prefix, res: {}", res.expr());
+
                     // Trigger the DataRouteUpdate
                     presubscription_preparation(
                         tables,
                         face,
                         sync_info,
                         estimated_time,
+                        id,
                         &mut res,
                         sub_info,
                         router,
@@ -648,6 +653,7 @@ fn declare_router_presubscription(
     target_router: ZenohIdProto,
     sync_info: SyncInfo,
     estimated_time: Duration,
+    id: SubscriberId,
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
     router: ZenohIdProto,
@@ -659,6 +665,7 @@ fn declare_router_presubscription(
         target_router,
         sync_info,
         estimated_time,
+        id,
         res,
         sub_info,
         router,
@@ -751,6 +758,11 @@ fn declare_simple_presubscription(
 ) {
     tracing::trace!("declare_simple_presubscription");
     // register_simple_subscription(tables, face, id, res, sub_info);
+
+    // Store the presubscription info
+    let client_id = face.zid;
+    hat_mut!(tables).pre_subs.entry(client_id).or_default().push(res.clone());
+
     let zid = tables.zid;
     let subscriber_identity = face.zid;
     //temporary fix it here
@@ -764,6 +776,7 @@ fn declare_simple_presubscription(
     let pub_router_id = 2;  // Filled in by the subscription (todo!)
     let sync_seq = 123;
     let sync_info = SyncInfo { subscriber_identity, pub_router_id, sync_seq };
+    let estimated_time = Duration::from_millis(3);
     // 1107: Do not build the SyncInfo here, pass the component subscriber_identity, pub_router, sync_seq
     register_router_presubscription(
         tables,
@@ -771,6 +784,7 @@ fn declare_simple_presubscription(
         target_router,
         sync_info,
         estimated_time,
+        id,
         res,
         sub_info,
         zid,
@@ -1507,6 +1521,19 @@ pub(crate) fn declare_sub_interest(
     }
 }
 
+pub(crate) fn activate_presubscription_to_subscription(
+    hat_code: &(dyn crate::net::routing::hat::HatTrait + Send + Sync),
+    tables: &mut Tables,
+    face: &mut Arc<FaceState>,
+    id: SubscriberId,
+    res: &mut Arc<Resource>,
+    sub_info: &SubscriberInfo,
+    ) {
+        // face_hat_mut!(face).remote_subs.insert(id, res.clone());
+        register_simple_subscription(tables, face, id, res, sub_info);
+        // register_simple_subscription(for insert the session_ctx in resource, compute data route will use it)
+        // Do I need to recompute the data route, or compute it at first, just make the resource valid and not valid at first,
+    }
 impl HatPubSubTrait for HatCode {
     fn declare_subscription(
         &self,
@@ -1593,6 +1620,7 @@ impl HatPubSubTrait for HatCode {
                         target_router,
                         sync_info,
                         estimated_time,
+                        id,
                         res,
                         sub_info,
                         router,
@@ -1878,138 +1906,6 @@ impl HatPubSubTrait for HatCode {
         }
         Arc::new(route)
     }
-
-    // fn compute_presubscribe_route(
-    //     &self,
-    //     tables: &Tables,
-    //     expr: &mut RoutingExpr,
-    //     source: NodeId,
-    //     source_type: WhatAmI,
-    // ) -> Arc<Route> {
-    //     #[inline]
-    //     fn insert_faces_for_subs(
-    //         route: &mut Route,
-    //         expr: &RoutingExpr,
-    //         tables: &Tables,
-    //         net: &Network,
-    //         source: NodeId,
-    //         subs: &HashSet<ZenohIdProto>,
-    //     ) {
-    //         if net.trees.len() > source as usize {
-    //             for sub in subs {
-    //                 if let Some(sub_idx) = net.get_idx(sub) {
-    //                     if net.trees[source as usize].directions.len() > sub_idx.index() {
-    //                         if let Some(direction) =
-    //                             net.trees[source as usize].directions[sub_idx.index()]
-    //                         {
-    //                             if net.graph.contains_node(direction) {
-    //                                 if let Some(face) = tables.get_face(&net.graph[direction].zid) {
-    //                                     route.entry(face.id).or_insert_with(|| {
-    //                                         let key_expr = Resource::get_best_key(
-    //                                             expr.prefix,
-    //                                             expr.suffix,
-    //                                             face.id,
-    //                                         );
-    //                                         (face.clone(), key_expr.to_owned(), source)
-    //                                     });
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         } else {
-    //             tracing::trace!("Tree for node sid:{} not yet ready", source);
-    //         }
-    //     }
-
-    //     let mut route = HashMap::new();
-    //     let key_expr = expr.full_expr();
-    //     if key_expr.ends_with('/') {
-    //         return Arc::new(route);
-    //     }
-    //     tracing::trace!(
-    //         "compute_data_route({}, {:?}, {:?})",
-    //         key_expr,
-    //         source,
-    //         source_type
-    //     );
-    //     let key_expr = match OwnedKeyExpr::try_from(key_expr) {
-    //         Ok(ke) => ke,
-    //         Err(e) => {
-    //             tracing::warn!("Invalid KE reached the system: {}", e);
-    //             return Arc::new(route);
-    //         }
-    //     };
-    //     let res = Resource::get_resource(expr.prefix, expr.suffix);
-    //     let matches = res
-    //         .as_ref()
-    //         .and_then(|res| res.context.as_ref())
-    //         .map(|ctx| Cow::from(&ctx.matches))
-    //         .unwrap_or_else(|| Cow::from(Resource::get_matches(tables, &key_expr)));
-
-    //     let master = !hat!(tables).full_net(WhatAmI::Peer)
-    //         || *hat!(tables).elect_router(&tables.zid, &key_expr, hat!(tables).shared_nodes.iter())
-    //             == tables.zid;
-
-    //     for mres in matches.iter() {
-    //         let mres = mres.upgrade().unwrap();
-
-    //         if master || source_type == WhatAmI::Router {
-    //             let net = hat!(tables).routers_net.as_ref().unwrap();
-    //             let router_source = match source_type {
-    //                 WhatAmI::Router => source,
-    //                 _ => net.idx.index() as NodeId,
-    //             };
-    //             insert_faces_for_subs(
-    //                 &mut route,
-    //                 expr,
-    //                 tables,
-    //                 net,
-    //                 router_source,
-    //                 &res_hat!(mres).router_subs,
-    //             );
-    //         }
-
-    //         if (master || source_type != WhatAmI::Router) && hat!(tables).full_net(WhatAmI::Peer) {
-    //             let net = hat!(tables).linkstatepeers_net.as_ref().unwrap();
-    //             let peer_source = match source_type {
-    //                 WhatAmI::Peer => source,
-    //                 _ => net.idx.index() as NodeId,
-    //             };
-    //             insert_faces_for_subs(
-    //                 &mut route,
-    //                 expr,
-    //                 tables,
-    //                 net,
-    //                 peer_source,
-    //                 &res_hat!(mres).linkstatepeer_subs,
-    //             );
-    //         }
-
-    //         if master || source_type == WhatAmI::Router {
-    //             for (sid, context) in &mres.session_ctxs {
-    //                 if context.subs.is_some() && context.face.whatami != WhatAmI::Router {
-    //                     route.entry(*sid).or_insert_with(|| {
-    //                         let key_expr = Resource::get_best_key(expr.prefix, expr.suffix, *sid);
-    //                         (context.face.clone(), key_expr.to_owned(), NodeId::default())
-    //                     });
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     for mcast_group in &tables.mcast_groups {
-    //         route.insert(
-    //             mcast_group.id,
-    //             (
-    //                 mcast_group.clone(),
-    //                 expr.full_expr().to_string().into(),
-    //                 NodeId::default(),
-    //             ),
-    //         );
-    //     }
-    //     Arc::new(route)
-    // }
 
     fn get_data_routes_entries(&self, tables: &Tables) -> RoutesIndexes {
         get_routes_entries(tables)

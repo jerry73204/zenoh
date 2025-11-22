@@ -362,6 +362,12 @@ pub(crate) fn undeclare_subscription(
         // NOTE: This is expected behavior if subscriber declarations are denied with ingress ACL interceptor.
         tracing::debug!("{} Undeclare unknown subscriber {}", face, id);
     }
+    {
+        let rtables = zread!(tables.tables);
+        println!("hat_code info: {}", hat_code.info(&rtables, face.whatami));
+        println!("Now the resource tree after 'undeclare_subscription' will print");
+        println!("root_res tree {:#?}", rtables._get_root());
+    }
 }
 
 fn compute_data_routes_(tables: &Tables, routes: &mut DataRoutes, expr: &mut RoutingExpr) {
@@ -451,18 +457,6 @@ pub(crate) fn compute_matches_data_routes<'a>(
                 routes.push((match_, match_routes));
             }
         }
-    }
-    routes
-}
-
-pub(crate) fn compute_presubscribe_control_routes<'a>(
-    tables: &'a Tables,
-    res: &'a Arc<Resource>,
-) -> Vec<(Arc<Resource>, DataRoutes)> {
-    let mut routes = vec![];
-    if res.context.is_some() {
-        let mut expr = RoutingExpr::new(res, "");
-        routes.push((res.clone(), compute_data_routes(tables, &mut expr)));
     }
     routes
 }

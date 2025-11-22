@@ -175,6 +175,11 @@ impl Router {
         )?;
         drop(tables);
         drop(ctrl_lock);
+        if face.state.whatami == WhatAmI::Client{
+            let rtables = zread!(self.tables.tables);
+            println!("Now the resource tree after 'new_transport_unicast_face' from client will print");
+            println!("root_res tree {:#?}", rtables._get_root());
+        }
         for (p, m) in declares {
             p.send_declare(m);
         }

@@ -23,7 +23,13 @@ async fn main() {
     let (config, key_expr) = parse_args();
 
     println!("Opening session...");
-    let session = zenoh::open(config).await.unwrap();
+    let session = match zenoh::open(config).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error opening session: {e}");
+            std::process::exit(1);
+        }
+    };
 
     println!("Declaring Subscriber on '{}'...", &key_expr);
     let subscriber = session.declare_subscriber(&key_expr).await.unwrap();

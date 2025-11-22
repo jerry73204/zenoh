@@ -34,6 +34,10 @@ pub struct CommonArgs {
     #[arg(long)]
     /// Enable shared-memory feature.
     enable_shm: bool,
+    /// The identifier (as an hexadecimal string, with odd number of chars - e.g.: A0B23...) that zenohd must use. If not set, a random unsigned 128bit integer will be used.
+    /// WARNING: this identifier must be unique in the system and must be 16 bytes maximum (32 chars)!
+    #[arg(short, long)]
+    id: Option<String>,
 }
 
 impl From<CommonArgs> for Config {
@@ -79,6 +83,11 @@ impl From<&CommonArgs> for Config {
                 eprintln!("`--enable-shm` argument: SHM cannot be enabled, because Zenoh is compiled without shared-memory feature!");
                 std::process::exit(-1);
             }
+        }
+        if let Some(id) = &args.id {
+            config
+                .insert_json5("id", &json!(id).to_string())
+                .unwrap();
         }
         for json in &args.cfg {
             if let Some((key, value)) = json.split_once(':') {

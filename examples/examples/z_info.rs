@@ -35,6 +35,9 @@ async fn main() {
         "peers zid: {:?}",
         info.peers_zid().await.collect::<Vec<ZenohId>>()
     );
+
+    println!("Press CTRL-C to exit.");
+    tokio::signal::ctrl_c().await.unwrap();
 }
 
 #[derive(clap::Parser, Clone, PartialEq, Eq, Hash, Debug)]
