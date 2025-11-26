@@ -160,7 +160,14 @@ impl fmt::Debug for ResourceContext {
                 self.data_routes
                     .routers
                     .iter()
-                    .map(|router| format!("{:?}", router))
+                    .map(|route_map| {
+                        let inner = route_map
+                            .iter()
+                            .map(|(k, v)| format!("    {:?}: {:?}", k, v))
+                            .collect::<Vec<_>>()
+                            .join(",\n");
+                        format!("{{{}\n }}", inner)
+                    })
                     .collect::<Vec<_>>()
                     .join(",\n")
             ),
@@ -172,7 +179,14 @@ impl fmt::Debug for ResourceContext {
                 self.data_routes
                     .peers
                     .iter()
-                    .map(|peer| format!("{:?}", peer))
+                    .map(|route_map| {
+                        let inner = route_map
+                            .iter()
+                            .map(|(k, v)| format!("    {:?}: {:?}", k, v))
+                            .collect::<Vec<_>>()
+                            .join(",\n");
+                        format!("{{{}\n }}", inner)
+                    })
                     .collect::<Vec<_>>()
                     .join(",\n")
             ),
@@ -184,7 +198,14 @@ impl fmt::Debug for ResourceContext {
                 self.data_routes
                     .clients
                     .iter()
-                    .map(|client| format!("{:?}", client))
+                    .map(|route_map| {
+                        let inner = route_map
+                            .iter()
+                            .map(|(k, v)| format!("    {:?}: {:?}", k, v))
+                            .collect::<Vec<_>>()
+                            .join(",\n");
+                        format!("{{{}\n }}", inner)
+                    })
                     .collect::<Vec<_>>()
                     .join(",\n")
             ),
