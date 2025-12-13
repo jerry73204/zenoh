@@ -1221,13 +1221,113 @@ impl Runtime {
                 let runtime = session.runtime.clone();
                 let cancellation_token = runtime.get_cancellation_token();
 
+                // Check if infinite timeout is configured (timeout_ms: -1)
+                let global_timeout = runtime.get_global_connect_timeout();
+                let use_endpoint_cycling = global_timeout == std::time::Duration::MAX;
+
                 session.runtime.spawn(async move {
                     let retry_config = runtime.get_global_connect_retry_config();
                     let mut period = retry_config.period();
-                    while runtime.start_client().await.is_err() {
-                        tokio::select! {
-                            _ = tokio::time::sleep(period.next_duration()) => {}
-                            _ = cancellation_token.cancelled() => { break; }
+
+                    if use_endpoint_cycling {
+                        // Get configured endpoints for cycling reconnection
+                        let peers = {
+                            runtime
+                                .state
+                                .config
+                                .lock()
+                                .0
+                                .connect()
+                                .endpoints()
+                                .client()
+                                .unwrap_or(&vec![])
+                                .clone()
+                        };
+
+                        if peers.is_empty() {
+                            // No configured endpoints, fall back to scouting
+                            while runtime.start_client().await.is_err() {
+                                tokio::select! {
+                                    _ = tokio::time::sleep(period.next_duration()) => {}
+                                    _ = cancellation_token.cancelled() => { break; }
+                                }
+                            }
+                        } else {
+                            // Cycle through all endpoints, trying each once per round
+                            'reconnect: loop {
+                                for peer in &peers {
+                                    if cancellation_token.is_cancelled() {
+                                        break 'reconnect;
+                                    }
+
+                                    let endpoint = peer.clone();
+                                    let per_endpoint_config =
+                                        runtime.get_connect_retry_config(&endpoint);
+                                    let timeout = per_endpoint_config.timeout();
+
+                                    tracing::debug!(
+                                        "Client reconnect: trying endpoint {:?} with timeout {:?}",
+                                        endpoint,
+                                        timeout
+                                    );
+
+                                    match tokio::time::timeout(
+                                        timeout,
+                                        runtime.manager().open_transport_unicast(endpoint.clone()),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(transport)) => {
+                                            tracing::info!(
+                                                "Client reconnected to endpoint {}",
+                                                endpoint
+                                            );
+                                            if let Ok(Some(orch_transport)) = transport.get_callback()
+                                            {
+                                                if let Some(orch_transport) = orch_transport
+                                                    .as_any()
+                                                    .downcast_ref::<super::RuntimeSession>()
+                                                {
+                                                    *zwrite!(orch_transport.endpoint) =
+                                                        Some(endpoint);
+                                                }
+                                            }
+                                            break 'reconnect;
+                                        }
+                                        Ok(Err(e)) => {
+                                            tracing::debug!(
+                                                "Client reconnect failed for {}: {}",
+                                                endpoint,
+                                                e
+                                            );
+                                        }
+                                        Err(_) => {
+                                            tracing::debug!(
+                                                "Client reconnect timed out for {}",
+                                                endpoint
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // All endpoints failed, wait before next round
+                                tracing::debug!(
+                                    "Client reconnect: all endpoints failed, retrying in {:?}",
+                                    period.duration()
+                                );
+                                tokio::select! {
+                                    _ = tokio::time::sleep(period.next_duration()) => {}
+                                    _ = cancellation_token.cancelled() => { break 'reconnect; }
+                                }
+                            }
+                        }
+                    } else {
+                        // Original behavior: use start_client which may get stuck on one endpoint
+                        while runtime.start_client().await.is_err() {
+                            tokio::select! {
+                                _ = tokio::time::sleep(period.next_duration()) => {}
+                                _ = cancellation_token.cancelled() => { break; }
+                            }
                         }
                     }
                 });
