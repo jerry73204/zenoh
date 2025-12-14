@@ -14,6 +14,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    fs,
     str::FromStr,
     sync::{atomic::Ordering, Arc},
     time::Duration,
@@ -747,6 +748,63 @@ fn declare_simple_subscription(
     register_router_subscription(tables, face, res, sub_info, zid, send_declare);
 }
 
+/// Read target router ZID from handover prediction file
+/// File format: {"imsi":21,"current_cell":13,"predicted_target":15,"target_edge_ip":"10.6.0.2",...}
+fn get_target_router_from_prediction() -> Option<ZenohIdProto> {
+    // Mapping: target_edge_ip -> zid
+    let edge_ip_to_zid: HashMap<&str, &str> = [
+        ("10.1.0.2", "c10274ef26525ccdb47947a9dfdd7f01"),
+        ("10.2.0.2", "bef96187ff749ce9379ef4257d963e18"),
+        ("10.3.0.2", "7c3d8f2a1b4e6590a8d2f7c3e9b1405d"),
+        ("10.4.0.2", "2e9a4c6f8d1b3570c9e2a5d8f0b74631"),
+        ("10.5.0.2", "5f1c9e3a7d0b8264f6c1a9e3d7b05842"),
+        ("10.6.0.2", "8a2d6f0c4e9b1753a8d2f6c0e4b91765"),
+        ("10.7.0.2", "3b7e1a5d9f0c4826b3e7a1d5f9c04837"),
+    ]
+    .iter()
+    .cloned()
+    .collect();
+
+    // Read the prediction file
+    let content = match fs::read_to_string("/mnt/ns3_handover.json") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to read handover prediction file: {}", e);
+            return None;
+        }
+    };
+
+    // Parse JSON to extract target_edge_ip
+    // Format: {"imsi":21,...,"target_edge_ip":"10.6.0.2",...}
+    let target_edge_ip = content
+        .split("\"target_edge_ip\":\"")
+        .nth(1)?
+        .split('"')
+        .next()?;
+
+    tracing::trace!("Parsed target_edge_ip from prediction file: {}", target_edge_ip);
+
+    // Look up the ZID
+    let zid_str = match edge_ip_to_zid.get(target_edge_ip) {
+        Some(zid) => *zid,
+        None => {
+            tracing::error!("Unknown target_edge_ip: {}", target_edge_ip);
+            return None;
+        }
+    };
+
+    match ZenohIdProto::from_str(zid_str) {
+        Ok(zid) => {
+            tracing::trace!("Resolved target router ZID: {}", zid);
+            Some(zid)
+        }
+        Err(e) => {
+            tracing::error!("Failed to parse ZID {}: {}", zid_str, e);
+            None
+        }
+    }
+}
+
 fn declare_simple_presubscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
@@ -765,11 +823,11 @@ fn declare_simple_presubscription(
 
     let zid = tables.zid;
     let subscriber_identity = face.zid;
-    //temporary fix it here
-    let target_router = match ZenohIdProto::from_str("12810fef4c61448a81e14160be8c8f3a") {
-        Ok(id) => id,
-        Err(_) => {
-            tracing::error!("Invalid hardcoded ZenohIdProto in declare_simple_presubscription");
+    // Read target router from handover prediction file
+    let target_router = match get_target_router_from_prediction() {
+        Some(zid) => zid,
+        None => {
+            tracing::error!("Failed to get target router from prediction file");
             return;
         }
     };
