@@ -102,6 +102,7 @@ fn send_presubscription_to_target_direction(
     target_router_id: NodeId,
     sync_info: SyncInfo,
     estimated_time: Duration,
+    id: SubscriberId,
     res: &Arc<Resource>,
     src_face: Option<&Arc<FaceState>>,
     _sub_info: &SubscriberInfo,
@@ -129,7 +130,7 @@ fn send_presubscription_to_target_direction(
                                 body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
                                     target_router_id: Some(target_router_id),
                                     sync_info: Some(sync_info),
-                                    id: 0, // Sourced presubscriptions do not use ids
+                                    id, // Propagate the client subscription id
                                     wire_expr: key_expr,
                                     estimated_time,
                                 }),
@@ -336,6 +337,7 @@ fn propagate_sourced_subscription(
 
 fn propagate_sourced_presubscription(
     tables: &Tables,
+    id: SubscriberId,
     res: &Arc<Resource>,
     sub_info: &SubscriberInfo,
     src_face: Option<&Arc<FaceState>>,
@@ -359,6 +361,7 @@ fn propagate_sourced_presubscription(
                     target_router_id.index() as NodeId,
                     sync_info,
                     estimated_time,
+                    id,
                     res,
                     src_face,
                     sub_info,
@@ -592,6 +595,7 @@ fn register_router_presubscription(
                 };
                 propagate_sourced_presubscription(
                     tables,
+                    id,
                     res,
                     sub_info,
                     Some(face),
