@@ -129,7 +129,7 @@ pub(crate) fn declare_subscription(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn declare_presubscription(
     hat_code: &(dyn HatTrait + Send + Sync),
-    tables: &TablesLock,
+    tables_ref: &Arc<TablesLock>,
     face: &mut Arc<FaceState>,
     id: SubscriberId,
     target_router_id: Option<NodeId>,
@@ -143,7 +143,7 @@ pub(crate) fn declare_presubscription(
     // Get the prefix @ under the resource tree, (a new function align with get_mapping)
     // Or match the face, if it is from client, add the %/ prefix
     // First check the Resource, if it is already there, then it's safe, the subscription is already there
-    let rtables = zread!(tables.tables);
+    let rtables = zread!(tables_ref.tables);
     match rtables
         .get_mapping(face, &expr.scope, expr.mapping)
         .cloned()
@@ -164,7 +164,7 @@ pub(crate) fn declare_presubscription(
                 if res.as_ref().map(|r| r.context.is_some()).unwrap_or(false) {
                     // drop the read table, get the write table
                     drop(rtables);
-                    let wtables = zwrite!(tables.tables);
+                    let wtables = zwrite!(tables_ref.tables);
                     (res.unwrap(), wtables)
                 } else {
                     let mut fullexpr = prefix.expr();
@@ -174,7 +174,7 @@ pub(crate) fn declare_presubscription(
                         .map(|ke| Resource::get_matches(&rtables, ke))
                         .unwrap_or_default();
                     drop(rtables);
-                    let mut wtables = zwrite!(tables.tables);
+                    let mut wtables = zwrite!(tables_ref.tables);
                     let mut res =
                         Resource::make_resource(&mut wtables, &mut prefix, expr.suffix.as_ref());
                     matches.push(Arc::downgrade(&res));
@@ -183,6 +183,7 @@ pub(crate) fn declare_presubscription(
                 };
             tracing::trace!("The key expression {} enters the hat_code.declare_presubscription routine.", {res.expr()});
             hat_code.declare_presubscription(
+                tables_ref.clone(),
                 &mut wtables,
                 face,
                 id,
@@ -198,11 +199,11 @@ pub(crate) fn declare_presubscription(
             disable_matches_data_routes(&mut wtables, &mut res);
             drop(wtables);
 
-            let rtables = zread!(tables.tables);
+            let rtables = zread!(tables_ref.tables);
             let matches_data_routes = compute_matches_data_routes(&rtables, &res);
             drop(rtables);
 
-            let wtables = zwrite!(tables.tables);
+            let wtables = zwrite!(tables_ref.tables);
             // put the compute route path into resource tree
             for (mut res, data_routes) in matches_data_routes {
                 get_mut_unchecked(&mut res)
@@ -223,7 +224,7 @@ pub(crate) fn declare_presubscription(
     // the middle nodes need to handle the resource context
     // (to make the path between the target node and the source node: quick path)
     {
-        let rtables = zread!(tables.tables);
+        let rtables = zread!(tables_ref.tables);
         println!("hat_code info: {}", hat_code.info(&rtables, face.whatami));
         println!("Now the resource tree after 'declare_presubscription' will print");
         println!("root_res tree {:#?}", rtables._get_root());

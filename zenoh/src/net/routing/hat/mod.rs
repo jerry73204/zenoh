@@ -174,6 +174,7 @@ pub(crate) trait HatPubSubTrait {
 
     fn declare_presubscription(
         &self,
+        _tables_ref: Arc<TablesLock>,
         tables: &mut Tables,
         face: &mut Arc<FaceState>,
         id: SubscriberId,

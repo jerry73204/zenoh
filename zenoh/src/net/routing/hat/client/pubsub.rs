@@ -35,7 +35,7 @@ use crate::{
             face::FaceState,
             pubsub::SubscriberInfo,
             resource::{NodeId, Resource, SessionContext},
-            tables::{Route, RoutingExpr, Tables},
+            tables::{Route, RoutingExpr, Tables, TablesLock},
         },
         hat::{HatPubSubTrait, SendDeclare, Sources},
         router::{update_data_routes_from, RoutesIndexes},
@@ -367,6 +367,7 @@ impl HatPubSubTrait for HatCode {
 
     fn declare_presubscription(
         &self,
+        _tables_ref: Arc<TablesLock>,
         tables: &mut Tables,
         face: &mut Arc<FaceState>,
         id: SubscriberId,

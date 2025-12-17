@@ -40,6 +40,7 @@ use zenoh_protocol::{
 use zenoh_result::ZResult;
 use zenoh_sync::get_mut_unchecked;
 use zenoh_task::TerminatableTask;
+use tokio::sync::oneshot;
 use zenoh_transport::unicast::TransportUnicast;
 
 use self::{
@@ -466,7 +467,7 @@ impl HatBaseTrait for HatCode {
                             let estimated_time = Duration::from_millis(3);
                             let expr = format!("%/{}", res.expr());
                             if let Some(mut res) = Resource::get_resource(&tables.root_res, &expr){
-                                hat_code.declare_presubscription(tables, &mut face.state, sub_id, None, None, estimated_time, &mut res, sub_info, 0, send_declare);
+                                hat_code.declare_presubscription(tables_ref.clone(), tables, &mut face.state, sub_id, None, None, estimated_time, &mut res, sub_info, 0, send_declare);
                             }
                         }
                         // let tables = zwrite!(&tables_ref.tables);
@@ -495,6 +496,12 @@ impl HatBaseTrait for HatCode {
                 return;
             }
         };
+
+        // Cancel presubscription watcher if exists (UE leaving)
+        if let Some(cancel_tx) = hat_face.presubscription_watcher_cancel.take() {
+            tracing::trace!("Cancelling presubscription watcher for face {}", face.zid);
+            let _ = cancel_tx.send(());
+        }
 
         hat_face.remote_interests.clear();
         hat_face.local_subs.clear();
@@ -918,6 +925,8 @@ struct HatFace {
     remote_qabls: HashMap<QueryableId, Arc<Resource>>,
     local_tokens: HashMap<Arc<Resource>, TokenId>,
     remote_tokens: HashMap<TokenId, Arc<Resource>>,
+    // Cancellation sender for presubscription file watcher task
+    presubscription_watcher_cancel: Option<oneshot::Sender<()>>,
 }
 
 impl HatFace {
@@ -932,6 +941,7 @@ impl HatFace {
             remote_qabls: HashMap::new(),
             local_tokens: HashMap::new(),
             remote_tokens: HashMap::new(),
+            presubscription_watcher_cancel: None,
         }
     }
 }

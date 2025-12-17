@@ -20,6 +20,8 @@ use std::{
     time::Duration,
 };
 
+use tokio::sync::oneshot;
+
 use petgraph::graph::NodeIndex;
 use zenoh_protocol::{
     core::{WhatAmI, ZenohIdProto, key_expr::OwnedKeyExpr},
@@ -46,9 +48,10 @@ use crate::net::routing::{
         interests::RemoteInterest,
         pubsub::{SubscriberInfo, update_data_routes_from, update_matches_data_routes},
         resource::{NodeId, Resource, SessionContext},
-        tables::{Route, RoutingExpr, Tables},
+        tables::{Route, RoutingExpr, Tables, TablesLock},
     }, hat::{CurrentFutureTrait, HatPubSubTrait, SendDeclare, Sources}, router::{RoutesIndexes}
 };
+use zenoh_core::{zlock, zwrite};
 
 #[inline]
 fn send_sourced_subscription_to_net_children(
@@ -810,48 +813,89 @@ fn get_target_router_from_prediction() -> Option<ZenohIdProto> {
 }
 
 fn declare_simple_presubscription(
+    tables_ref: Arc<TablesLock>,
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
     estimated_time: Duration,
     id: SubscriberId,
     res: &mut Arc<Resource>,
     sub_info: &SubscriberInfo,
-    send_declare: &mut SendDeclare,
+    _send_declare: &mut SendDeclare,
 ) {
     tracing::trace!("declare_simple_presubscription");
-    // register_simple_subscription(tables, face, id, res, sub_info);
 
     // Store the presubscription info
     let client_id = face.zid;
     hat_mut!(tables).pre_subs.entry(client_id).or_default().push(res.clone());
 
-    let zid = tables.zid;
+    // Cancel any existing watcher for this face by dropping the old sender
+    if let Some(old_cancel_tx) = face_hat_mut!(face).presubscription_watcher_cancel.take() {
+        // Sending to cancel (or just dropping it will close the channel)
+        let _ = old_cancel_tx.send(());
+    }
+
+    // Create new oneshot channel for cancellation
+    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+    face_hat_mut!(face).presubscription_watcher_cancel = Some(cancel_tx);
+
+    // Clone values needed for the async task
+    let tables_ref_clone = tables_ref.clone();
     let subscriber_identity = face.zid;
-    // Read target router from handover prediction file
-    let target_router = match get_target_router_from_prediction() {
-        Some(zid) => zid,
-        None => {
-            tracing::error!("Failed to get target router from prediction file");
-            return;
+    let face_zid = face.zid;
+    let res_clone = res.clone();
+    let sub_info_clone = *sub_info;
+    let router_zid = tables.zid;
+
+    // Spawn polling task that watches for prediction file changes
+    tokio::spawn(async move {
+        let mut last_target: Option<ZenohIdProto> = None;
+        // The prediction generator on the ns-3 side only fires every 480ms; polling faster would waste CPU cycles.
+        let mut interval = tokio::time::interval(Duration::from_millis(480));
+
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    tracing::trace!("Presubscription watcher cancelled for {}", face_zid);
+                    break;
+                }
+                _ = interval.tick() => {
+                    if let Some(new_target) = get_target_router_from_prediction() {
+                        if last_target.as_ref() != Some(&new_target) {
+                            tracing::trace!("New target router detected: {} for subscriber {}", new_target, face_zid);
+                            last_target = Some(new_target);
+
+                            // Acquire locks and call register_router_presubscription
+                            let ctrl_lock = zlock!(tables_ref_clone.ctrl_lock);
+                            let mut wtables = zwrite!(tables_ref_clone.tables);
+
+                            if let Some(mut face) = wtables.get_face(&face_zid).cloned() {
+                                let mut res = res_clone.clone();
+                                let sync_info = SyncInfo {
+                                    subscriber_identity,
+                                    pub_router_id: 6,  // TODO: fill appropriately
+                                    sync_seq: 123,
+                                };
+
+                                register_router_presubscription(
+                                    &mut wtables,
+                                    &mut face,
+                                    new_target,
+                                    sync_info,
+                                    Duration::from_millis(3),
+                                    id,
+                                    &mut res,
+                                    &sub_info_clone,
+                                    router_zid,
+                                    &mut |p, m| p.send_declare(m),
+                                );
+                            }
+                            drop(ctrl_lock);
+                        }
+                    }
+                }
+            }
         }
-    };
-    let pub_router_id = 2;  // Filled in by the subscription (todo!)
-    let sync_seq = 123;
-    let sync_info = SyncInfo { subscriber_identity, pub_router_id, sync_seq };
-    let estimated_time = Duration::from_millis(3);
-    // 1107: Do not build the SyncInfo here, pass the component subscriber_identity, pub_router, sync_seq
-    register_router_presubscription(
-        tables,
-        face,
-        target_router,
-        sync_info,
-        estimated_time,
-        id,
-        res,
-        sub_info,
-        zid,
-        send_declare,
-    );
+    });
 }
 
 #[inline]
@@ -1651,6 +1695,7 @@ impl HatPubSubTrait for HatCode {
 
     fn declare_presubscription(
         &self,
+        tables_ref: Arc<TablesLock>,
         tables: &mut Tables,
         face: &mut Arc<FaceState>,
         id: SubscriberId,
@@ -1693,7 +1738,7 @@ impl HatPubSubTrait for HatCode {
             }
             WhatAmI::Client => {
                 tracing::trace!("Receive Presubscription!!!");
-                declare_simple_presubscription(tables, face, estimated_time, id, res, sub_info, send_declare);
+                declare_simple_presubscription(tables_ref, tables, face, estimated_time, id, res, sub_info, send_declare);
             }
             _ => {}
         }
