@@ -379,7 +379,11 @@ impl TransportEventHandler for RuntimeTransportEventHandler {
                             handler.new_unicast(peer.clone(), transport.clone()).ok()
                         })
                         .collect();
-                Ok(Arc::new(RuntimeSession {
+
+                // Clone transport for handover watcher before passing to new_transport_unicast
+                let transport_for_watcher = transport.clone();
+
+                let session = Arc::new(RuntimeSession {
                     runtime: runtime.clone(),
                     endpoint: std::sync::RwLock::new(None),
                     main_handler: runtime
@@ -388,7 +392,28 @@ impl TransportEventHandler for RuntimeTransportEventHandler {
                         .new_transport_unicast(transport)
                         .unwrap(),
                     slave_handlers,
-                }))
+                });
+
+                // Spawn handover watcher for client connections with timeout_ms: -2
+                if runtime.whatami() == WhatAmI::Client {
+                    let is_handover_aware = {
+                        let config = runtime.state.config.lock();
+                        zenoh_config::is_handover_aware_mode(&config.0)
+                    };
+
+                    if is_handover_aware {
+                        let runtime_clone = runtime.clone();
+                        runtime.spawn(async move {
+                            orchestrator::spawn_handover_watcher(
+                                runtime_clone,
+                                transport_for_watcher,
+                            )
+                            .await;
+                        });
+                    }
+                }
+
+                Ok(session)
             }
             None => bail!("Runtime not yet ready!"),
         }

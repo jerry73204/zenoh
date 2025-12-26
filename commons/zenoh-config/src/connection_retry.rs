@@ -136,6 +136,20 @@ pub fn get_global_connect_timeout(config: &Config) -> std::time::Duration {
     )
 }
 
+/// Check if handover-aware mode is enabled (timeout_ms: -2)
+/// This mode enables:
+/// - Initial connection: cycle through endpoints like timeout_ms: -1
+/// - After connection: monitor /mnt/ns3_handover_event.json for handover events
+pub fn is_handover_aware_mode(config: &Config) -> bool {
+    let whatami = config.mode().unwrap_or(defaults::mode);
+    let timeout_ms = *config
+        .connect()
+        .timeout_ms()
+        .get(whatami)
+        .unwrap_or(defaults::connect::timeout_ms.get(whatami).unwrap());
+    timeout_ms == -2
+}
+
 pub fn get_retry_config(
     config: &Config,
     endpoint: Option<&EndPoint>,
