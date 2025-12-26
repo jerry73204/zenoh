@@ -38,6 +38,7 @@ use zenoh_protocol::{
     scouting::{HelloProto, Scout, ScoutingBody, ScoutingMessage},
 };
 use zenoh_result::{bail, zerror, ZResult};
+use zenoh_transport::unicast::TransportUnicast;
 
 use super::{Runtime, RuntimeSession};
 
@@ -338,6 +339,88 @@ impl Runtime {
     }
 
     async fn connect_peers_single_link(&self, peers: &[EndPoint]) -> ZResult<()> {
+        // Check if we should use endpoint cycling (timeout_ms: -1 or -2)
+        let global_timeout = self.get_global_connect_timeout();
+        let use_endpoint_cycling = global_timeout == std::time::Duration::MAX;
+
+        if use_endpoint_cycling && !peers.is_empty() {
+            // Cycle through all endpoints, trying each once per round
+            let cancellation_token = self.get_cancellation_token();
+            let retry_config = self.get_global_connect_retry_config();
+            let mut period = retry_config.period();
+
+            tracing::debug!(
+                "Initial connection: using endpoint cycling for {:?}",
+                peers
+            );
+
+            'connect: loop {
+                for peer in peers {
+                    if cancellation_token.is_cancelled() {
+                        break 'connect;
+                    }
+
+                    let endpoint = peer.clone();
+                    let per_endpoint_config = self.get_connect_retry_config(&endpoint);
+                    let timeout = per_endpoint_config.timeout();
+
+                    tracing::debug!(
+                        "Initial connection: trying endpoint {:?} with timeout {:?}",
+                        endpoint,
+                        timeout
+                    );
+
+                    match tokio::time::timeout(
+                        timeout,
+                        self.manager().open_transport_unicast(endpoint.clone()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(transport)) => {
+                            tracing::info!("Initial connection: connected to {}", endpoint);
+                            if let Ok(Some(orch_transport)) = transport.get_callback() {
+                                if let Some(orch_transport) = orch_transport
+                                    .as_any()
+                                    .downcast_ref::<super::RuntimeSession>()
+                                {
+                                    *zwrite!(orch_transport.endpoint) = Some(endpoint);
+                                }
+                            }
+                            return Ok(());
+                        }
+                        Ok(Err(e)) => {
+                            tracing::debug!(
+                                "Initial connection: failed for {}: {}",
+                                endpoint,
+                                e
+                            );
+                        }
+                        Err(_) => {
+                            tracing::debug!(
+                                "Initial connection: timed out for {}",
+                                endpoint
+                            );
+                        }
+                    }
+                }
+
+                // All endpoints failed, wait before next round
+                tracing::debug!(
+                    "Initial connection: all endpoints failed, retrying in {:?}",
+                    period.duration()
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(period.next_duration()) => {}
+                    _ = cancellation_token.cancelled() => { break 'connect; }
+                }
+            }
+
+            let e = zerror!("Unable to connect to any of {:?}! ", peers);
+            tracing::warn!("{}", &e);
+            return Err(e.into());
+        }
+
+        // Original behavior for timeout_ms: 0 or positive values
         for peer in peers {
             let endpoint = peer.clone();
             let retry_config = self.get_connect_retry_config(&endpoint);
@@ -1208,6 +1291,23 @@ impl Runtime {
                 let runtime = session.runtime.clone();
                 let cancellation_token = runtime.get_cancellation_token();
 
+                // Check if handover-aware mode is enabled (timeout_ms: -2)
+                // In this mode, the handover watcher handles reconnection, not closed_session
+                let is_handover_aware = {
+                    let config = runtime.state.config.lock();
+                    zenoh_config::is_handover_aware_mode(&config.0)
+                };
+
+                if is_handover_aware {
+                    // Handover watcher will handle reconnection
+                    tracing::debug!("closed_session: handover-aware mode, skipping reconnection (handover watcher handles it)");
+                    return;
+                }
+
+                // Check if infinite timeout is configured (timeout_ms: -1)
+                let global_timeout = runtime.get_global_connect_timeout();
+                let use_endpoint_cycling = global_timeout == std::time::Duration::MAX;
+
                 session.runtime.spawn(async move {
                     let retry_config = runtime.get_global_connect_retry_config();
                     let mut period = retry_config.period();
@@ -1244,5 +1344,247 @@ impl Runtime {
                 }
             }
         }
+    }
+}
+
+// Handover-aware connection management for timeout_ms: -2
+const HANDOVER_FILE: &str = "/mnt/ns3_handover_event.json";
+
+/// Spawns a handover watcher that monitors /mnt/ns3_handover_event.json
+/// and triggers connection switching when a handover_start event is detected.
+pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicast) {
+    let mut last_timestamp: Option<u64> = None;
+    let cancellation_token = runtime.get_cancellation_token();
+
+    #[cfg(target_os = "linux")]
+    {
+        use inotify::{Inotify, WatchMask};
+        use std::os::fd::AsRawFd;
+        use std::path::Path;
+        use std::sync::Arc;
+
+        let inotify = match Inotify::init() {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::error!("Handover watcher: failed to init inotify: {}", e);
+                return;
+            }
+        };
+
+        // Watch the file or parent directory if file doesn't exist yet
+        let watch_path = if Path::new(HANDOVER_FILE).exists() {
+            HANDOVER_FILE
+        } else {
+            "/mnt"
+        };
+
+        if let Err(e) = inotify
+            .watches()
+            .add(watch_path, WatchMask::MODIFY | WatchMask::CLOSE_WRITE | WatchMask::CREATE)
+        {
+            tracing::error!("Handover watcher: failed to add watch for {}: {}", watch_path, e);
+            return;
+        }
+
+        tracing::info!("Handover watcher: monitoring {} via inotify", watch_path);
+
+        // Use Arc<Mutex> to share inotify between blocking thread and async task
+        let inotify = Arc::new(std::sync::Mutex::new(inotify));
+
+        loop {
+            let has_events = tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    tracing::debug!("Handover watcher: cancelled");
+                    break;
+                }
+                result = {
+                    let inotify = inotify.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut buffer = [0; 1024];
+                        let mut inotify = inotify.lock().unwrap();
+                        // This blocks until events arrive (sub-millisecond response)
+                        match inotify.read_events_blocking(&mut buffer) {
+                            Ok(events) => events.count() > 0,
+                            Err(e) => {
+                                tracing::error!("Handover watcher: inotify error: {}", e);
+                                false
+                            }
+                        }
+                    })
+                } => {
+                    match result {
+                        Ok(has_events) => has_events,
+                        Err(e) => {
+                            tracing::error!("Handover watcher: spawn_blocking error: {}", e);
+                            false
+                        }
+                    }
+                }
+            };
+
+            if has_events {
+                if let Some(new_endpoint) = read_handover_event(HANDOVER_FILE, &mut last_timestamp) {
+                    tracing::info!("Handover detected, switching to {}", new_endpoint);
+
+                    // Close current transport
+                    if let Err(e) = transport.close().await {
+                        tracing::warn!("Handover watcher: failed to close transport: {}", e);
+                    }
+
+                    // Directly connect to the target mapped endpoint
+                    let retry_config = runtime.get_connect_retry_config(&new_endpoint);
+                    let timeout = retry_config.timeout();
+
+                    loop {
+                        if cancellation_token.is_cancelled() {
+                            tracing::debug!("Handover watcher: cancelled during reconnection");
+                            break;
+                        }
+
+                        tracing::debug!(
+                            "Handover: connecting to {} with timeout {:?}",
+                            new_endpoint,
+                            timeout
+                        );
+
+                        match tokio::time::timeout(
+                            timeout,
+                            runtime.manager().open_transport_unicast(new_endpoint.clone()),
+                        )
+                        .await
+                        {
+                            Ok(Ok(new_transport)) => {
+                                tracing::info!("Handover: connected to {}", new_endpoint);
+                                // Store endpoint in the new RuntimeSession
+                                if let Ok(Some(callback)) = new_transport.get_callback() {
+                                    if let Some(session) =
+                                        callback.as_any().downcast_ref::<RuntimeSession>()
+                                    {
+                                        *zwrite!(session.endpoint) = Some(new_endpoint.clone());
+                                    }
+                                }
+                                // Exit this watcher; new connection will spawn its own watcher
+                                return;
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!(
+                                    "Handover: failed to connect to {}: {}",
+                                    new_endpoint,
+                                    e
+                                );
+                            }
+                            Err(_) => {
+                                tracing::warn!("Handover: connection to {} timed out", new_endpoint);
+                            }
+                        }
+
+                        // Wait before retry (1ms for minimum latency)
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        tracing::info!("Handover watcher: using polling fallback (non-Linux)");
+
+        loop {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    tracing::debug!("Handover watcher: cancelled");
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if let Some(new_endpoint) = read_handover_event(HANDOVER_FILE, &mut last_timestamp) {
+                        tracing::info!("Handover detected, switching to {}", new_endpoint);
+
+                        // Close current transport
+                        if let Err(e) = transport.close().await {
+                            tracing::warn!("Handover watcher: failed to close transport: {}", e);
+                        }
+
+                        // Directly connect to the target mapped endpoint
+                        let retry_config = runtime.get_connect_retry_config(&new_endpoint);
+                        let timeout = retry_config.timeout();
+
+                        loop {
+                            if cancellation_token.is_cancelled() {
+                                break;
+                            }
+
+                            match tokio::time::timeout(
+                                timeout,
+                                runtime.manager().open_transport_unicast(new_endpoint.clone()),
+                            )
+                            .await
+                            {
+                                Ok(Ok(new_transport)) => {
+                                    tracing::info!("Handover: connected to {}", new_endpoint);
+                                    if let Ok(Some(callback)) = new_transport.get_callback() {
+                                        if let Some(session) =
+                                            callback.as_any().downcast_ref::<RuntimeSession>()
+                                        {
+                                            *zwrite!(session.endpoint) = Some(new_endpoint.clone());
+                                        }
+                                    }
+                                    return;
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::warn!(
+                                        "Handover: failed to connect to {}: {}",
+                                        new_endpoint,
+                                        e
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::warn!("Handover: connection to {} timed out", new_endpoint);
+                                }
+                            }
+
+                            // Wait before retry (1ms for minimum latency)
+                            tokio::time::sleep(Duration::from_millis(1)).await;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn read_handover_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<EndPoint> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let event = json.get("event")?.as_str()?;
+    // Accept both handover_start and handover_success events
+    // (handover_start may be missed due to 2ms interval between events)
+    if event != "handover_start" {
+        return None;
+    }
+
+    let timestamp = json.get("timestamp_ms")?.as_u64()?;
+    if Some(timestamp) == *last_timestamp {
+        return None; // Already processed this event
+    }
+    *last_timestamp = Some(timestamp);
+
+    let target_ip = json.get("target_edge_ip")?.as_str()?;
+    // Map 10.X.0.2 → tcp/10.X.1.3:7447
+    map_ip_to_endpoint(target_ip)
+}
+
+fn map_ip_to_endpoint(ip: &str) -> Option<EndPoint> {
+    // Pattern: 10.X.0.2 → tcp/10.X.1.3:7447
+    let parts: Vec<&str> = ip.split('.').collect();
+    if parts.len() == 4 && parts[0] == "10" && parts[2] == "0" && parts[3] == "2" {
+        let x = parts[1];
+        let endpoint_str = format!("tcp/10.{}.1.3:7447", x);
+        endpoint_str.parse().ok()
+    } else {
+        None
     }
 }
