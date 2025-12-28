@@ -1462,14 +1462,14 @@ const HANDOVER_FILE: &str = "/mnt/ns3_handover_event.json";
 /// Spawns a handover watcher that monitors /mnt/ns3_handover_event.json
 /// and triggers connection switching when a handover_start event is detected.
 pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicast) {
-    let mut last_timestamp: Option<u64> = None;
+    // Initialize with current timestamp to avoid re-triggering on existing event
+    let mut last_timestamp: Option<u64> = get_current_handover_timestamp(HANDOVER_FILE);
     let cancellation_token = runtime.get_cancellation_token();
 
     #[cfg(target_os = "linux")]
     {
         use inotify::{Inotify, WatchMask};
-        use std::os::fd::AsRawFd;
-        use std::path::Path;
+        use std::ffi::OsStr;
         use std::sync::Arc;
 
         let inotify = match Inotify::init() {
@@ -1480,28 +1480,25 @@ pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicas
             }
         };
 
-        // Watch the file or parent directory if file doesn't exist yet
-        let watch_path = if Path::new(HANDOVER_FILE).exists() {
-            HANDOVER_FILE
-        } else {
-            "/mnt"
-        };
+        // Always watch the directory to handle file recreation (new inode)
+        const WATCH_DIR: &str = "/mnt";
+        const WATCH_FILENAME: &str = "ns3_handover_event.json";
 
-        if let Err(e) = inotify
-            .watches()
-            .add(watch_path, WatchMask::MODIFY | WatchMask::CLOSE_WRITE | WatchMask::CREATE)
-        {
-            tracing::error!("Handover watcher: failed to add watch for {}: {}", watch_path, e);
+        if let Err(e) = inotify.watches().add(
+            WATCH_DIR,
+            WatchMask::MODIFY | WatchMask::CLOSE_WRITE | WatchMask::CREATE | WatchMask::MOVED_TO,
+        ) {
+            tracing::error!("Handover watcher: failed to add watch for {}: {}", WATCH_DIR, e);
             return;
         }
 
-        tracing::info!("Handover watcher: monitoring {} via inotify", watch_path);
+        tracing::info!("Handover watcher: monitoring {} via inotify", WATCH_DIR);
 
         // Use Arc<Mutex> to share inotify between blocking thread and async task
         let inotify = Arc::new(std::sync::Mutex::new(inotify));
 
         loop {
-            let has_events = tokio::select! {
+            let has_target_event = tokio::select! {
                 _ = cancellation_token.cancelled() => {
                     tracing::debug!("Handover watcher: cancelled");
                     break;
@@ -1513,7 +1510,12 @@ pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicas
                         let mut inotify = inotify.lock().unwrap();
                         // This blocks until events arrive (sub-millisecond response)
                         match inotify.read_events_blocking(&mut buffer) {
-                            Ok(events) => events.count() > 0,
+                            Ok(events) => {
+                                // Check if any event is for our target file
+                                events.into_iter().any(|event| {
+                                    event.name == Some(OsStr::new(WATCH_FILENAME))
+                                })
+                            }
                             Err(e) => {
                                 tracing::error!("Handover watcher: inotify error: {}", e);
                                 false
@@ -1522,7 +1524,7 @@ pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicas
                     })
                 } => {
                     match result {
-                        Ok(has_events) => has_events,
+                        Ok(has_event) => has_event,
                         Err(e) => {
                             tracing::error!("Handover watcher: spawn_blocking error: {}", e);
                             false
@@ -1531,7 +1533,7 @@ pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicas
                 }
             };
 
-            if has_events {
+            if has_target_event {
                 if let Some(new_endpoint) = read_handover_event(HANDOVER_FILE, &mut last_timestamp) {
                     tracing::info!("Handover detected, switching to {}", new_endpoint);
 
@@ -1670,11 +1672,10 @@ fn read_handover_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<E
 
     let event = json.get("event")?.as_str()?;
     // Accept both handover_start and handover_success events
-    // (handover_start may be missed due to 2ms interval between events)
-    if event != "handover_start" {
+    if event != "handover_success" {
         return None;
     }
-
+    tracing::trace!("event type: {}", event);
     let timestamp = json.get("timestamp_ms")?.as_u64()?;
     if Some(timestamp) == *last_timestamp {
         return None; // Already processed this event
@@ -1696,4 +1697,12 @@ fn map_ip_to_endpoint(ip: &str) -> Option<EndPoint> {
     } else {
         None
     }
+}
+
+/// Read the current timestamp from the handover event file (if it exists)
+/// Used to initialize the watcher so it doesn't re-trigger on existing events
+fn get_current_handover_timestamp(path: &str) -> Option<u64> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("timestamp_ms")?.as_u64()
 }
