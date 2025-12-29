@@ -437,6 +437,7 @@ impl HatBaseTrait for HatCode {
                 if let Some(res_vec) = hat!(tables).pre_subs.get(&cli_zid).cloned() {
                     for mut res in res_vec{
                         if let Some((sub_id,sync_seq)) = res_hat!(res).presubscriptions.get(&cli_zid).cloned(){
+                            tracing::trace!("sub_id: {}", sub_id);
                             let hat_code = self;
                             let sub_info = &SubscriberInfo;
                             pubsub::activate_presubscription_to_subscription(

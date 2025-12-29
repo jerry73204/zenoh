@@ -20,7 +20,10 @@
 use std::{
     any::Any,
     collections::HashMap,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc,
+    },
 };
 
 use token::{token_new_face, undeclare_simple_token};
@@ -73,11 +76,24 @@ macro_rules! face_hat_mut {
 }
 use face_hat_mut;
 
-struct HatTables {}
+macro_rules! hat {
+    ($t:expr) => {
+        $t.hat.downcast_ref::<HatTables>().unwrap()
+    };
+}
+use hat;
+
+struct HatTables {
+    /// Tracks if the first transport face has been created.
+    /// Used to skip pubsub_new_face for post-handover connections in handover-aware mode.
+    first_transport_face_created: AtomicBool,
+}
 
 impl HatTables {
     fn new() -> Self {
-        Self {}
+        Self {
+            first_transport_face_created: AtomicBool::new(false),
+        }
     }
 }
 
@@ -121,7 +137,37 @@ impl HatBaseTrait for HatCode {
         send_declare: &mut SendDeclare,
     ) -> ZResult<()> {
         interests_new_face(tables, &mut face.state);
-        pubsub_new_face(tables, &mut face.state, send_declare);
+
+        // Check if we should skip pubsub_new_face (handover-aware mode + post-first-connection)
+        let should_skip_pubsub = {
+            if let Some(runtime) = tables.runtime.as_ref().and_then(|r| r.upgrade()) {
+                let is_handover_aware = {
+                    let config_guard = runtime.config().lock();
+                    zenoh_config::is_handover_aware_mode(&config_guard.0)
+                };
+                if is_handover_aware {
+                    // Check and set first_transport_face_created flag
+                    // Returns true if flag was already set (meaning this is post-handover)
+                    let hat_tables = hat!(tables);
+                    hat_tables
+                        .first_transport_face_created
+                        .swap(true, Ordering::SeqCst)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        if should_skip_pubsub {
+            tracing::debug!(
+                "Skipping pubsub_new_face for post-handover connection in handover-aware mode"
+            );
+        } else {
+            pubsub_new_face(tables, &mut face.state, send_declare);
+        }
+
         queries_new_face(tables, &mut face.state, send_declare);
         token_new_face(tables, &mut face.state, send_declare);
         Ok(())
