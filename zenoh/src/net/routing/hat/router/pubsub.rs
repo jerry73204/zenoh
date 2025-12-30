@@ -556,7 +556,7 @@ fn register_router_presubscription(
     tracing::trace!("register_router_presubscription");
     tracing::trace!("{:?}", res);
     tracing::trace!("{:?}", res_hat!(res).router_subs);
-    if !res_hat!(res).router_subs.contains(&router) {
+    if !res_hat!(res).router_subs.contains(&router) || !res_hat!(res).router_subs.contains(&target_router) {
         // Register the presubscription
         {
             tracing::trace!("router: {:?}", router);
