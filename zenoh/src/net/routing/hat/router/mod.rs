@@ -468,6 +468,18 @@ impl HatBaseTrait for HatCode {
                             let estimated_time = Duration::from_millis(3);
                             let expr = format!("%/{}", res.expr());
                             if let Some(mut res) = Resource::get_resource(&tables.root_res, &expr){
+                                // Clear router_subs for the prefixed resource to handle ping-pong reconnection
+                                if !res_hat!(res).router_subs.is_empty() {
+                                    tracing::trace!(
+                                        "Clearing router_subs for prefixed resource {} before presubscription (ping-pong fix)",
+                                        res.expr()
+                                    );
+                                    res_hat_mut!(&mut res).router_subs.clear();
+                                    // Also remove from global router_subs if now empty
+                                    hat_mut!(tables)
+                                        .router_subs
+                                        .retain(|sub| !Arc::ptr_eq(sub, &res));
+                                }
                                 hat_code.declare_presubscription(tables_ref.clone(), tables, &mut face.state, sub_id, None, None, estimated_time, &mut res, sub_info, 0, send_declare);
                             }
                         }

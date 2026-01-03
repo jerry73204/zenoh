@@ -827,6 +827,7 @@ fn declare_simple_presubscription(
     // Store the presubscription info
     let client_id = face.zid;
     hat_mut!(tables).pre_subs.entry(client_id).or_default().push(res.clone());
+    face_hat_mut!(face).remote_subs.insert(id, res.clone());
 
     // Cancel any existing watcher for this face by dropping the old sender
     if let Some(old_cancel_tx) = face_hat_mut!(face).presubscription_watcher_cancel.take() {
