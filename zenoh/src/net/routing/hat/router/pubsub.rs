@@ -394,26 +394,26 @@ fn propagate_routeupdate(
     sub_info: &SubscriberInfo,
     src_face: Option<&Arc<FaceState>>,
     source: &ZenohIdProto,
-    pub_router: &ZenohIdProto,
+    pub_router_id: NodeId,
     prev_router: &ZenohIdProto,
     estimated_time: Duration,
     net_type: WhatAmI,
 ) {
     tracing::trace!("propagate_routeupdate");
     let net = hat!(tables).get_net(net_type).unwrap();
-    match (net.get_idx(source), net.get_idx(prev_router), net.get_idx(pub_router)) {
-        (Some(presub_tree_sid), Some(originsub_tree_sid), Some(pub_router_id)) => {
+    match (net.get_idx(source), net.get_idx(prev_router)) {
+        (Some(presub_tree_sid), Some(originsub_tree_sid)) => {
             tracing::trace!("propagate_routeupdate");
             tracing::trace!("This is presub trees: {:#?}", &net.trees[presub_tree_sid.index()]);
             tracing::trace!("This is originsub trees: {:#?}", &net.trees[originsub_tree_sid.index()]);
-            tracing::trace!("The pub_router_id: {}", pub_router_id.index());
+            tracing::trace!("The pub_router_id: {}", pub_router_id);
             if net.trees.len() > presub_tree_sid.index() && net.trees.len() > originsub_tree_sid.index(){
                 send_routeupdate_to_convergence(
                     tables,
                     net,
                     presub_tree_sid.index(),
                     originsub_tree_sid.index(),
-                    pub_router_id.index() as NodeId,
+                    pub_router_id,
                     estimated_time,
                     res,
                     src_face,
@@ -425,11 +425,11 @@ fn propagate_routeupdate(
                     "Propagating sub {} and sub {}: tree for node {} sid:{} not yet ready",
                     res.expr(),
                     presub_tree_sid.index(), originsub_tree_sid.index(),
-                    pub_router_id.index()
+                    pub_router_id
                 );
             }
         }
-        (_, _, _) => tracing::error!(
+        (_, _) => tracing::error!(
             "Error propagating sub {}: cannot get index of {} and {}!",
             res.expr(),
             source,
@@ -524,19 +524,19 @@ fn presubscription_preparation(
     //                             res.expr(),
     //                         ));
     // 1107: No need to change it here, remove get_router, pass it inside
-    if let Some(pub_router) = get_router(tables, face, pub_router_id) {
+    // if let Some(pub_router) = get_router_id(tables, face, pub_router_id) {
         propagate_routeupdate(
             tables,
             res,
             sub_info,
             None,
             &tables.zid,
-            &pub_router,
+            pub_router_id,
             &router,
             estimated_time,
             WhatAmI::Router
         );
-    }
+    // }
     // face prebuilt for the comming client
 
 }
@@ -591,11 +591,11 @@ fn register_router_presubscription(
         else{
             // Propagate subscription to routers
             // 1107: The sync_info can be built here, or before the send
-            if let Some(pub_router_id) = get_router_id(tables, face, sync_info.pub_router_id){
-                let sync_info = SyncInfo {
-                    pub_router_id:pub_router_id,
-                    ..sync_info
-                };
+            // if let Some(pub_router_id) = get_router_id(tables, face, sync_info.pub_router_id){
+            //     let sync_info = SyncInfo {
+            //         pub_router_id:pub_router_id,
+            //         ..sync_info
+            //     };
                 propagate_sourced_presubscription(
                     tables,
                     id,
@@ -608,7 +608,7 @@ fn register_router_presubscription(
                     sync_info,
                     estimated_time,
                 );
-            }
+            // }
         }
     }
 
@@ -619,7 +619,7 @@ fn register_router_presubscription(
 fn register_router_prerouteupdate(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
-    pub_router: ZenohIdProto,
+    pub_router: NodeId,
     prev_router: ZenohIdProto,
     estimated_time: Duration,
     res: &mut Arc<Resource>,
@@ -641,7 +641,7 @@ fn register_router_prerouteupdate(
         // Propagate subscription to routers
         // Move this out(todo)
     }
-    propagate_routeupdate(tables, res, sub_info, Some(face), &router, &pub_router, &prev_router, estimated_time, WhatAmI::Router);
+    propagate_routeupdate(tables, res, sub_info, Some(face), &router, pub_router, &prev_router, estimated_time, WhatAmI::Router);
 }
 
 fn declare_router_subscription(
@@ -870,9 +870,26 @@ fn declare_simple_presubscription(
 
                             if let Some(mut face) = wtables.get_face(&face_zid).cloned() {
                                 let mut res = res_clone.clone();
+
+                                // Look up the node_id for the publisher router (8a2d6f0c4e9b1753a8d2f6c0e4b91765)
+                                let pub_router_id = if let Some(net) = hat!(wtables).get_net(WhatAmI::Router) {
+                                    let pub_zid_str = "8a2d6f0c4e9b1753a8d2f6c0e4b91765";
+                                    if let Ok(pub_zid) = ZenohIdProto::from_str(pub_zid_str) {
+                                        net.get_idx(&pub_zid)
+                                            .map(|idx| idx.index() as NodeId)
+                                            .unwrap_or(0)
+                                    } else {
+                                        tracing::error!("Failed to parse publisher ZID: {}", pub_zid_str);
+                                        0
+                                    }
+                                } else {
+                                    tracing::error!("Router network not available");
+                                    0
+                                };
+
                                 let sync_info = SyncInfo {
                                     subscriber_identity,
-                                    pub_router_id: 6,  // TODO: fill appropriately
+                                    pub_router_id,
                                     sync_seq: 123,
                                 };
 
@@ -1714,13 +1731,13 @@ impl HatPubSubTrait for HatCode {
                 let router_opt = get_router(tables, face, node_id);
                 let target_opt = get_router(tables, face, target_router_id);
                 // 1107: Change the get_router_id --> get_router, first get the ZenohIdProto 'pub_opt'
-                let pub_opt = get_router(tables, face, sync_info.pub_router_id);
-                if let (Some(router), Some(target_router), Some(_)) = (router_opt, target_opt, pub_opt) {
+                let pub_opt = get_router_id(tables, face, sync_info.pub_router_id);
+                if let (Some(router), Some(target_router), Some(pub_router_id)) = (router_opt, target_opt, pub_opt) {
                     // 1107: Do not change the sync_info SyncInfo here
-                    // let sync_info = SyncInfo {
-                    //     pub_router_id:pub_router_id,
-                    //     ..sync_info
-                    // };
+                    let sync_info = SyncInfo {
+                        pub_router_id:pub_router_id,
+                        ..sync_info
+                    };
                     declare_router_presubscription(
                         tables,
                         face,
@@ -1762,7 +1779,7 @@ impl HatPubSubTrait for HatCode {
             WhatAmI::Router => {
                 tracing::trace!("declare_routeupdate sent from router");
                 if let Some(mut res) = res {
-                    if let Some((pub_router, prev_router)) = get_router(tables, face, pub_router_id).zip(get_router(tables, face, prev_router_id))  {
+                    if let Some((pub_router, prev_router)) = get_router_id(tables, face, pub_router_id).zip(get_router(tables, face, prev_router_id))  {
                         if let Some(router) = get_router(tables, face, node_id) {
                             register_router_prerouteupdate(tables, face, pub_router, prev_router, estimated_time, &mut res, sub_info, router, send_declare);
                             Some(res)
