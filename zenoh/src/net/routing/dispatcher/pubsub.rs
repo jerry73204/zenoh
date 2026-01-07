@@ -247,29 +247,27 @@ pub(crate) fn declare_routeupdate(
     let res = if expr.is_empty() {
         None
     } else {
-        let rtables = zread!(tables.tables);
-        match rtables.get_mapping(face, &expr.scope, expr.mapping) {
-            Some(prefix) => match Resource::get_resource(prefix, expr.suffix.as_ref()) {
-                Some(res) => Some(res),
+        // First get the prefix with a read lock
+        let prefix = {
+            let rtables = zread!(tables.tables);
+            match rtables.get_mapping(face, &expr.scope, expr.mapping) {
+                Some(prefix) => prefix.clone(),
                 None => {
                     tracing::error!(
-                        "{} Undeclare unknown subscriber {}{}!",
+                        "{} RouteUpdate with unknown scope {}",
                         face,
-                        prefix.expr(),
-                        expr.suffix
+                        expr.scope
                     );
                     return;
                 }
-            },
-            None => {
-                tracing::error!(
-                    "{} Undeclare subscriber with unknown scope {}",
-                    face,
-                    expr.scope
-                );
-                return;
             }
-        }
+        };
+        // Then use make_resource with a write lock to create the resource if it doesn't exist
+        // This handles the case where the original subscription was undeclared before the routeupdate arrived
+        let mut wtables = zwrite!(tables.tables);
+        let res = Resource::make_resource(&mut wtables, &mut prefix.clone(), expr.suffix.as_ref());
+        drop(wtables);
+        Some(res)
     };
     let mut wtables = zwrite!(tables.tables);
     if let Some(mut res) =

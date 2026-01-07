@@ -569,23 +569,25 @@ fn register_router_presubscription(
         if target_router == tables.zid {
             // Change the key expression
             if let Some(key_expr) = res.expr().strip_prefix("%/"){
-                if let Some(mut res) = Resource::get_resource(&tables.root_res, &key_expr){
-                    tracing::trace!("After stripping the pre-subscribe prefix, res: {}", res.expr());
+                // Use make_resource to create the resource if it doesn't exist
+                // This handles the case where the original subscription was undeclared
+                // before the presubscription arrived
+                let mut res = Resource::make_resource(tables, &mut tables.root_res.clone(), &key_expr);
+                tracing::trace!("After stripping the pre-subscribe prefix, res: {}", res.expr());
 
-                    // Trigger the DataRouteUpdate
-                    presubscription_preparation(
-                        tables,
-                        face,
-                        sync_info,
-                        estimated_time,
-                        id,
-                        &mut res,
-                        sub_info,
-                        router,
-                        WhatAmI::Router,
-                        send_declare
-                    );
-                }
+                // Trigger the DataRouteUpdate
+                presubscription_preparation(
+                    tables,
+                    face,
+                    sync_info,
+                    estimated_time,
+                    id,
+                    &mut res,
+                    sub_info,
+                    router,
+                    WhatAmI::Router,
+                    send_declare
+                );
             }
         }
         else{
