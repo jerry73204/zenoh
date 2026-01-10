@@ -1672,7 +1672,7 @@ fn read_handover_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<E
 
     let event = json.get("event")?.as_str()?;
     // Accept both handover_start and handover_success events
-    if event != "handover_success" {
+    if event != "handover_start" {
         return None;
     }
     tracing::trace!("event type: {}", event);
