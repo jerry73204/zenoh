@@ -24,7 +24,7 @@ use zenoh_link::Link;
 use zenoh_protocol::{
     core::{Priority, WhatAmI, ZenohIdProto},
     network::NetworkMessage,
-    transport::{close, Close, PrioritySn, TransportMessage, TransportSn},
+    transport::{Close, PrioritySn, TransportMessage, TransportSn},
 };
 use zenoh_result::{bail, zerror, ZResult};
 
@@ -261,14 +261,49 @@ impl TransportUnicastTrait for TransportUnicastUniversal {
                 );
 
                 if count >= limit {
-                    let e = zerror!(
-                        "Can not add Link {} with peer {}: max num of links reached {}/{}",
-                        link,
+                    // MAX_LINKS reached: This is likely a reconnection from the same peer.
+                    // The old inbound links are probably stale (peer disconnected without
+                    // sending Close). Close all existing inbound links to allow the new connection.
+                    tracing::debug!(
+                        "MAX_LINKS reached for peer {}: closing {} stale inbound link(s) to accept reconnection",
                         self.config.zid,
-                        count,
-                        limit
+                        count
                     );
-                    return Err((e.into(), link.fail(), close::reason::MAX_LINKS));
+
+                    // Collect stale inbound links to close
+                    let stale_links: Vec<_> = guard
+                        .iter()
+                        .filter(|l| l.link.config.direction == TransportLinkUnicastDirection::Inbound)
+                        .cloned()
+                        .collect();
+
+                    // Drop the read guard before modifying
+                    drop(guard);
+
+                    // Remove stale links from the transport and close them
+                    {
+                        let mut write_guard = zwrite!(self.links);
+                        let remaining: Vec<_> = write_guard
+                            .iter()
+                            .filter(|l| l.link.config.direction != TransportLinkUnicastDirection::Inbound)
+                            .cloned()
+                            .collect();
+                        *write_guard = remaining.into_boxed_slice();
+                    }
+
+                    // Close the stale links asynchronously
+                    for stale_link in stale_links {
+                        let link_info = stale_link.link.link.clone();
+                        tracing::debug!(
+                            "Closing stale inbound link {:?} for peer {}",
+                            link_info,
+                            self.config.zid
+                        );
+                        // Spawn the close task to avoid blocking
+                        zenoh_runtime::ZRuntime::Net.spawn(async move {
+                            let _ = stale_link.close().await;
+                        });
+                    }
                 }
             }
         }
