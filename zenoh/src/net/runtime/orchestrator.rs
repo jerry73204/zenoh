@@ -1459,9 +1459,11 @@ impl Runtime {
 // Handover-aware connection management for timeout_ms: -2
 const HANDOVER_FILE: &str = "/mnt/ns3_handover_event.json";
 
-/// Spawns a handover watcher that monitors /mnt/ns3_handover_event.json
-/// and triggers connection switching when a handover_start event is detected.
-pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicast) {
+/// Spawns a handover watcher for the client side.
+/// Monitors /mnt/ns3_handover_event.json and when a handover_start event is detected:
+/// 1. Closes the current transport to the old router
+/// 2. Connects to the new target router specified in the event
+pub async fn spawn_client_handover_watcher(runtime: Runtime, transport: TransportUnicast) {
     // Initialize with current timestamp to avoid re-triggering on existing event
     let mut last_timestamp: Option<u64> = get_current_handover_timestamp(HANDOVER_FILE);
     let cancellation_token = runtime.get_cancellation_token();
@@ -1666,12 +1668,129 @@ pub async fn spawn_handover_watcher(runtime: Runtime, transport: TransportUnicas
     }
 }
 
+/// Spawns a handover watcher for the router side.
+/// Monitors /mnt/ns3_handover_event.json and when a handover_start event is detected:
+/// Closes the transport to the client that is handing over.
+/// The client is responsible for reconnecting to the new router.
+pub async fn spawn_router_handover_watcher(runtime: Runtime, transport: TransportUnicast) {
+    // Initialize with current timestamp to avoid re-triggering on existing event
+    let mut last_timestamp: Option<u64> = get_current_handover_timestamp(HANDOVER_FILE);
+    let cancellation_token = runtime.get_cancellation_token();
+
+    #[cfg(target_os = "linux")]
+    {
+        use inotify::{Inotify, WatchMask};
+        use std::ffi::OsStr;
+        use std::sync::Arc;
+
+        let inotify = match Inotify::init() {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::error!("Handover watcher: failed to init inotify: {}", e);
+                return;
+            }
+        };
+
+        // Always watch the directory to handle file recreation (new inode)
+        const WATCH_DIR: &str = "/mnt";
+        const WATCH_FILENAME: &str = "ns3_handover_event.json";
+
+        if let Err(e) = inotify.watches().add(
+            WATCH_DIR,
+            WatchMask::MODIFY | WatchMask::CLOSE_WRITE | WatchMask::CREATE | WatchMask::MOVED_TO,
+        ) {
+            tracing::error!("Handover watcher: failed to add watch for {}: {}", WATCH_DIR, e);
+            return;
+        }
+
+        tracing::info!("Handover watcher: monitoring {} via inotify", WATCH_DIR);
+
+        // Use Arc<Mutex> to share inotify between blocking thread and async task
+        let inotify = Arc::new(std::sync::Mutex::new(inotify));
+
+        loop {
+            let has_event = tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    tracing::debug!("Handover watcher: cancelled");
+                    break;
+                }
+                result = {
+                    let inotify = inotify.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut buffer = [0; 1024];
+                        let mut inotify = inotify.lock().unwrap();
+                        // This blocks until events arrive (sub-millisecond response)
+                        match inotify.read_events_blocking(&mut buffer) {
+                            Ok(events) => {
+                                // Check if any event is for our target file
+                                events.into_iter().any(|event| {
+                                    event.name == Some(OsStr::new(WATCH_FILENAME))
+                                })
+                            }
+                            Err(e) => {
+                                tracing::error!("Handover watcher: inotify error: {}", e);
+                                false
+                            }
+                        }
+                    })
+                } => {
+                    match result {
+                        Ok(has_event) => has_event,
+                        Err(e) => {
+                            tracing::error!("Handover watcher: spawn_blocking error: {}", e);
+                            false
+                        }
+                    }
+                }
+            };
+
+            if has_event {
+                if let Some(_) = read_close_event(HANDOVER_FILE, &mut last_timestamp) {
+                    tracing::info!("Handover detected, closing client face");
+
+                    // Close current transport
+                    if let Err(e) = transport.close().await {
+                        tracing::warn!("Handover watcher: failed to close transport: {}", e);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        tracing::info!("Handover watcher: using polling fallback (non-Linux)");
+
+        loop {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    tracing::debug!("Handover watcher: cancelled");
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if let Some(_) = read_close_event(HANDOVER_FILE, &mut last_timestamp) {
+                        tracing::info!("Handover detected, closing client face");
+
+                        // Close current transport
+                        if let Err(e) = transport.close().await {
+                            tracing::warn!("Handover watcher: failed to close transport: {}", e);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Reads handover event file and returns the target endpoint if a new handover_start event is detected.
+/// Used by client to determine which router to connect to after handover.
 fn read_handover_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<EndPoint> {
     let content = std::fs::read_to_string(path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
 
     let event = json.get("event")?.as_str()?;
-    // Accept both handover_start and handover_success events
     if event != "handover_start" {
         return None;
     }
@@ -1685,6 +1804,25 @@ fn read_handover_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<E
     let target_ip = json.get("target_edge_ip")?.as_str()?;
     // Map 10.X.0.2 → tcp/10.X.1.3:7447
     map_ip_to_endpoint(target_ip)
+}
+
+/// Reads handover event file and returns Some(()) if a new handover_start event is detected.
+/// Used by router to detect when to close client connection.
+fn read_close_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<()> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let event = json.get("event")?.as_str()?;
+    if event != "handover_start" {
+        return None;
+    }
+    tracing::trace!("event type: {}", event);
+    let timestamp = json.get("timestamp_ms")?.as_u64()?;
+    if Some(timestamp) == *last_timestamp {
+        return None; // Already processed this event
+    }
+    *last_timestamp = Some(timestamp);
+    Some(())
 }
 
 fn map_ip_to_endpoint(ip: &str) -> Option<EndPoint> {

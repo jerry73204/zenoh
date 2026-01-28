@@ -404,7 +404,27 @@ impl TransportEventHandler for RuntimeTransportEventHandler {
                     if is_handover_aware {
                         let runtime_clone = runtime.clone();
                         runtime.spawn(async move {
-                            orchestrator::spawn_handover_watcher(
+                            orchestrator::spawn_client_handover_watcher(
+                                runtime_clone,
+                                transport_for_watcher,
+                            )
+                            .await;
+                        });
+                    }
+                }
+
+                // Spawn handover watcher for router's client connections with timeout_ms: -2
+                // Only watch client connections, not router-to-router connections
+                else if runtime.whatami() == WhatAmI::Router && peer.whatami == WhatAmI::Client {
+                    let is_handover_aware = {
+                        let config = runtime.state.config.lock();
+                        zenoh_config::is_handover_aware_mode(&config.0)
+                    };
+
+                    if is_handover_aware {
+                        let runtime_clone = runtime.clone();
+                        runtime.spawn(async move {
+                            orchestrator::spawn_router_handover_watcher(
                                 runtime_clone,
                                 transport_for_watcher,
                             )
