@@ -11,6 +11,8 @@
 // Contributors:
 //   ZettaScale Zenoh Team, <zenoh@zettascale.tech>
 //
+use std::str::FromStr;
+
 use super::*;
 
 macro_rules! mode_accessor {
@@ -164,6 +166,9 @@ impl Default for ConnectConfig {
             endpoints: ModeDependentValue::Unique(vec![]),
             exit_on_failure: None,
             retry: None,
+            handover_client_zid: Some(
+                ZenohId::from_str("a09dd826e1c88cfd06d5d6f4cc0eb5b6").unwrap(),
+            ),
         }
     }
 }

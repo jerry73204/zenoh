@@ -256,6 +256,10 @@ validated_struct::validator! {
             /// if connection timeout exceed, exit from application
             pub exit_on_failure: Option<ModeDependentValue<bool>>,
             pub retry: Option<connection_retry::ConnectionRetryModeDependentConf>,
+            /// For routers in handover-aware mode (timeout_ms: -2): the ZID of the specific client
+            /// whose connection should be closed when a handover event is detected.
+            /// If not set, no client connections are monitored for handover.
+            pub handover_client_zid: Option<ZenohId>,
         },
         /// Which endpoints to listen on.
         pub listen:

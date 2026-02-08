@@ -60,6 +60,11 @@
       /// increase factor for the next timeout until nexti connect try
       period_increase_factor: 2,
     },
+
+    /// For routers in handover-aware mode (timeout_ms: -2): the ZID of the specific client
+    /// whose connection should be closed when a handover event is detected.
+    /// If not set, no client connections are monitored for handover.
+    // handover_client_zid: "a1b2c3d4e5f6...",
   },
 
   /// Which endpoints to listen on. E.g. tcp/0.0.0.0:7447.
