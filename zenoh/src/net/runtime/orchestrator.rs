@@ -1813,7 +1813,7 @@ fn read_close_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<()> 
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
 
     let event = json.get("event")?.as_str()?;
-    if event != "handover_start" {
+    if event != "handover_success" {
         return None;
     }
     tracing::trace!("event type: {}", event);
