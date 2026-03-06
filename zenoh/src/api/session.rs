@@ -35,7 +35,7 @@ use zenoh_buffers::ZBuf;
 use zenoh_collections::SingleOrVec;
 use zenoh_config::{qos::PublisherQoSConfig, unwrap_or_default, wrappers::ZenohId};
 use zenoh_core::{zconfigurable, zread, Resolve, ResolveClosure, ResolveFuture, Wait};
-use zenoh_keyexpr::{key_expr, keyexpr_tree::{arc_tree::IArc, KeBoxTree}};
+use zenoh_keyexpr::keyexpr_tree::KeBoxTree;
 #[cfg(feature = "unstable")]
 use zenoh_protocol::network::declare::SubscriberId;
 use zenoh_protocol::{
@@ -47,7 +47,7 @@ use zenoh_protocol::{
     network::{
         self,
         declare::{
-            self, common::ext::WireExprType, queryable::ext::QueryableInfoType, Declare, DeclareBody, DeclareKeyExpr, DeclarePreSubscriber, DeclareQueryable, DeclareSubscriber, DeclareToken, SyncInfo, TokenId, UndeclareQueryable, UndeclareSubscriber, UndeclareToken, NodeId,
+            self, common::ext::WireExprType, queryable::ext::QueryableInfoType, Declare, DeclareBody, DeclareKeyExpr, DeclarePreSubscriber, DeclareQueryable, DeclareSubscriber, DeclareToken, TokenId, UndeclareQueryable, UndeclareSubscriber, UndeclareToken,
         },
         ext,
         interest::{InterestId, InterestMode, InterestOptions},
@@ -138,7 +138,6 @@ pub(crate) struct SessionState {
     pub(crate) remote_tokens: HashMap<TokenId, KeyExpr<'static>>,
     //pub(crate) publications: Vec<OwnedKeyExpr>,
     pub(crate) subscribers: HashMap<Id, Arc<SubscriberState>>,
-    pub(crate) presubscribers: HashMap<Id, Arc<SubscriberState>>,
     pub(crate) liveliness_subscribers: HashMap<Id, Arc<SubscriberState>>,
     pub(crate) queryables: HashMap<Id, Arc<QueryableState>>,
     #[cfg(feature = "unstable")]
@@ -173,7 +172,6 @@ impl SessionState {
             remote_tokens: HashMap::new(),
             //publications: Vec::new(),
             subscribers: HashMap::new(),
-            presubscribers: HashMap::new(),
             liveliness_subscribers: HashMap::new(),
             queryables: HashMap::new(),
             #[cfg(feature = "unstable")]
@@ -421,47 +419,6 @@ impl SessionState {
         (sub_state, declared_sub)
     }
 
-    fn register_presubscriber<'a>(
-        &mut self,
-        id: EntityId,
-        key_expr: &'a KeyExpr,
-        origin: Locality,
-        callback: Callback<Sample>,
-    ) -> Arc<SubscriberState> {
-        let sub_state = SubscriberState {
-            id,
-            remote_id: id,
-            key_expr: key_expr.clone().into_owned(),
-            origin,
-            callback,
-        };
-        let sub_state = Arc::new(sub_state);
-
-        self.presubscribers
-            .insert(sub_state.id, sub_state.clone());
-        for res in self
-            .local_resources
-            .values_mut()
-            .filter_map(Resource::as_node_mut)
-        {
-            if key_expr.intersects(&res.key_expr) {
-                res.subscribers_mut(SubscriberKind::Subscriber)
-                    .push(sub_state.clone());
-            }
-        }
-        for res in self
-            .remote_resources
-            .values_mut()
-            .filter_map(Resource::as_node_mut)
-        {
-            if key_expr.intersects(&res.key_expr) {
-                res.subscribers_mut(SubscriberKind::Subscriber)
-                    .push(sub_state.clone());
-            }
-        }
-
-        sub_state
-    }
 }
 
 impl fmt::Debug for SessionState {
@@ -1618,56 +1575,54 @@ impl SessionInner {
         callback: Callback<Sample>,
         estimated_time: Duration,
     ) -> ZResult<Arc<SubscriberState>> {
-        let key_expr = KeyExpr::new(format!("%/{}", key_expr.as_str()))?;
         let mut state = zwrite!(self.state);
-        tracing::trace!("declare_presubscriber({:?})", &key_expr);
+        tracing::trace!("declare_presubscriber({:?})", key_expr);
         let id = self.runtime.next_id();
-        let sub_state = state.register_presubscriber(id, &key_expr, origin, callback);
+        let (sub_state, declared_sub) = state.register_subscriber(id, key_expr, origin, callback);
 
-        // if origin != Locality::SessionLocal {
-            let primitives = state.primitives()?;
-            drop(state);
+        let primitives = state.primitives()?;
+        drop(state);
 
-            // let target_router_id: NodeId = 1;
-            // let pub_node_id: NodeId = 3;
-            // let zid = self.zid().into();
-            // let sequence_number: u32 = 123;
-            // let sync_info = SyncInfo {
-            //     pub_node_id: pub_node_id,
-            //     subscriber_identity: zid,
-            //     sync_seq: sequence_number,
-            // };
+        // Send DeclareSubscriber if needed (same as declare_subscriber_inner)
+        if let Some(declared_key_expr) = declared_sub {
             primitives.send_declare(Declare {
                 interest_id: None,
                 ext_qos: declare::ext::QoSType::DECLARE,
                 ext_tstamp: None,
                 ext_nodeid: declare::ext::NodeIdType::DEFAULT,
-                body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
-                    target_router_id: None,
-                    sync_info: None,
+                body: DeclareBody::DeclareSubscriber(DeclareSubscriber {
                     id,
-                    wire_expr: key_expr.to_wire(self).to_owned(),
-                    estimated_time,
+                    wire_expr: declared_key_expr.to_wire(self).to_owned(),
                 }),
             });
-            #[cfg(feature = "unstable")]
-            {
-                let state = zread!(self.state);
-                self.update_matching_status(
-                    &state,
-                    &key_expr,
-                    MatchingStatusType::Subscribers,
-                    true,
-                )
-            }
-        // } else {
-        //     drop(state);
-        //     #[cfg(feature = "unstable")]
-        //     {
-        //         let state = zread!(self.state);
-        //         self.update_matching_status(&state, key_expr, MatchingStatusType::Subscribers, true)
-        //     }
-        // }
+        }
+
+        // Always send DeclarePreSubscriber with "%/" prefix, using the same id
+        let pre_key_expr = KeyExpr::new(format!("%/{}", key_expr.as_str()))?;
+        primitives.send_declare(Declare {
+            interest_id: None,
+            ext_qos: declare::ext::QoSType::DECLARE,
+            ext_tstamp: None,
+            ext_nodeid: declare::ext::NodeIdType::DEFAULT,
+            body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
+                target_router_id: None,
+                sync_info: None,
+                id,
+                wire_expr: pre_key_expr.to_wire(self).to_owned(),
+                estimated_time,
+            }),
+        });
+
+        #[cfg(feature = "unstable")]
+        {
+            let state = zread!(self.state);
+            self.update_matching_status(
+                &state,
+                key_expr,
+                MatchingStatusType::Subscribers,
+                true,
+            )
+        }
 
         Ok(sub_state)
     }

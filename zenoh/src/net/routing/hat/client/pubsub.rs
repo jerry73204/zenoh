@@ -91,11 +91,20 @@ fn propagate_simple_presubscription_to(
     send_declare: &mut SendDeclare,
 ) {
     if src_face.id != dst_face.id
-        // && !face_hat!(dst_face).local_subs.contains_key(res)
         && (src_face.whatami == WhatAmI::Client || dst_face.whatami == WhatAmI::Client)
     {
-        let id = face_hat!(dst_face).next_id.fetch_add(1, Ordering::SeqCst);
-        face_hat_mut!(dst_face).local_subs.insert(res.clone(), id);
+        // Look up the id assigned to the original resource (without "%/" prefix)
+        let pre_expr = res.expr();
+        let original_expr = pre_expr.strip_prefix("%/").unwrap_or(&pre_expr);
+        let id = face_hat!(dst_face)
+            .local_subs
+            .iter()
+            .find(|(r, _)| r.expr() == original_expr)
+            .map(|(_, &id)| id)
+            .unwrap_or_else(|| {
+                tracing::warn!("No existing subscription found for '{}', generating new id", original_expr);
+                face_hat!(dst_face).next_id.fetch_add(1, Ordering::SeqCst)
+            });
         let key_expr = Resource::decl_key(res, dst_face, true);
         send_declare(
             &dst_face.primitives,
@@ -217,7 +226,7 @@ fn declare_simple_subscription(
 fn declare_simple_presubscription(
     tables: &mut Tables,
     face: &mut Arc<FaceState>,
-    id: SubscriberId,
+    _id: SubscriberId,
     target_router_id: Option<NodeId>, //publisher node id
     sync_info: Option<SyncInfo>,     // presubscriber id: sync_info.target_node_id
     estimated_time: Duration, // a
@@ -225,8 +234,6 @@ fn declare_simple_presubscription(
     sub_info: &SubscriberInfo,
     send_declare: &mut SendDeclare,
 ) {
-    register_simple_subscription(tables, face, id, res, sub_info);
-
     propagate_simple_presubscription(tables, res, sub_info, face, target_router_id, sync_info, estimated_time, send_declare);
 }
 

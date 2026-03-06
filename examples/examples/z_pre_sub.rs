@@ -31,11 +31,8 @@ async fn main() {
         }
     };
 
-    println!("Declaring Subscriber on '{}'...", &key_expr);
-    let subscriber = session.declare_subscriber(&key_expr).await.unwrap();
-    // let key_expr = format!("{}", key_expr);
     println!("Declaring PreSubscriber on '{}'...", &key_expr);
-    let pre_subscriber = session.declare_presubscriber(&key_expr).await.unwrap();
+    let subscriber = session.declare_presubscriber(&key_expr).await.unwrap();
 
     println!("Press CTRL-C to quit...");
     while let Ok(sample) = subscriber.recv_async().await {
