@@ -499,9 +499,9 @@ impl Primitives for Face {
 
     #[inline]
     fn send_push(&self, msg: Push, reliability: Reliability) {
-        println!("");
-        println!("In send_push function");
-        println!("{:#?}",&msg);
+        // println!("");
+        // println!("In send_push function");
+        // println!("{:#?}",&msg);
         route_data(&self.tables, &self.state, msg, reliability);
     }
 
