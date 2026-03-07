@@ -273,7 +273,7 @@ pub(crate) fn declare_routeupdate(
     if let Some(mut res) =
         hat_code.declare_routeupdate(&mut wtables, face, pub_router_id, prev_router_id, estimated_time, res, sub_info, node_id, send_declare)
     {
-        tracing::debug!("{} Undeclare subscriber ({})", face, res.expr());
+        tracing::debug!("{} Declare routeUpdate ({})", face, res.expr());
         disable_matches_data_routes(&mut wtables, &mut res);
         drop(wtables);
 
