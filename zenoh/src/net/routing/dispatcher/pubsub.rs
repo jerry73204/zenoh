@@ -621,6 +621,10 @@ pub fn route_data(
 
                 let route = get_data_route(&tables, face, &res, &mut expr, msg.ext_nodeid.node_id);
 
+                // Buffer for any presubscribed client not yet connected (handover gap).
+                // Fast-path when pre_subs is empty: O(1) return.
+                tables.hat_code.buffer_for_presubscription(&tables, &res, &mut expr, &msg, reliability);
+
                 if !route.is_empty() {
                     tracing::trace!("route is not empty: {:?}", route);
                     treat_timestamp!(&tables.hlc, msg.payload, tables.drop_future_timestamp);

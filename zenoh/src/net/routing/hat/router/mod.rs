@@ -19,9 +19,9 @@
 //! [Click here for Zenoh's documentation](https://docs.rs/zenoh/latest/zenoh)
 use std::{
     any::Any,
-    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     hash::Hasher,
-    sync::{Arc, atomic::AtomicU32}, time::Duration,
+    sync::{Arc, Mutex, atomic::AtomicU32}, time::Duration,
 };
 
 use token::{token_linkstate_change, token_remove_node, undeclare_simple_token};
@@ -29,12 +29,12 @@ use tracing::{info, debug};
 use zenoh_config::{unwrap_or_default, ModeDependent, WhatAmI, WhatAmIMatcher};
 use zenoh_protocol::{
     common::ZExtBody,
-    core::ZenohIdProto,
+    core::{Reliability, ZenohIdProto},
     network::{
         declare::{queryable::ext::QueryableInfoType, QueryableId, SubscriberId, SyncSeq, TokenId},
         interest::InterestId,
         oam::id::OAM_LINKSTATE,
-        Oam,
+        Oam, Push,
     },
 };
 use zenoh_result::ZResult;
@@ -161,6 +161,16 @@ impl TreesComputationWorker {
     }
 }
 
+pub(super) const HANDOVER_BUFFER_CAPACITY: usize = 1;
+
+pub(super) struct BufferedPush {
+    pub(super) push: Push,
+    pub(super) reliability: Reliability,
+    /// Prefix resource + suffix string, used to remap the WireExpr at flush time.
+    pub(super) prefix: Arc<Resource>,
+    pub(super) suffix: Box<str>,
+}
+
 struct HatTables {
     router_subs: HashSet<Arc<Resource>>,
     linkstatepeer_subs: HashSet<Arc<Resource>>,
@@ -175,6 +185,7 @@ struct HatTables {
     routers_trees_worker: TreesComputationWorker,
     linkstatepeers_trees_worker: TreesComputationWorker,
     router_peers_failover_brokering: bool,
+    handover_buffer: Arc<Mutex<HashMap<ZenohIdProto, VecDeque<BufferedPush>>>>,
 }
 
 impl HatTables {
@@ -193,6 +204,7 @@ impl HatTables {
             routers_trees_worker: TreesComputationWorker::new(WhatAmI::Router),
             linkstatepeers_trees_worker: TreesComputationWorker::new(WhatAmI::Peer),
             router_peers_failover_brokering,
+            handover_buffer: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -486,6 +498,8 @@ impl HatBaseTrait for HatCode {
                         // let tables = zwrite!(&tables_ref.tables);
                     }
                 }
+                // Flush any packets buffered during the handover gap
+                pubsub::flush_handover_buffer(tables, &face.state);
             }
             _ => (),
         }
@@ -514,6 +528,14 @@ impl HatBaseTrait for HatCode {
         if let Some(cancel_tx) = hat_face.presubscription_watcher_cancel.take() {
             tracing::trace!("Cancelling presubscription watcher for face {}", face.zid);
             let _ = cancel_tx.send(());
+        }
+
+        // Discard any buffered handover packets for this face
+        {
+            let mut buf = hat!(wtables).handover_buffer.lock().unwrap();
+            if buf.remove(&face.zid).is_some() {
+                tracing::trace!("Cleared handover buffer for closing face {}", face.zid);
+            }
         }
 
         hat_face.remote_interests.clear();

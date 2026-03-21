@@ -21,13 +21,13 @@ use std::{any::Any, sync::Arc, time::Duration};
 
 use zenoh_config::{unwrap_or_default, Config, WhatAmI};
 use zenoh_protocol::{
-    core::ZenohIdProto,
+    core::{Reliability, ZenohIdProto},
     network::{
         declare::{
             queryable::ext::QueryableInfoType, QueryableId, SubscriberId, SyncInfo, TokenId,
         },
         interest::{InterestId, InterestMode, InterestOptions},
-        Declare, Oam,
+        Declare, Oam, Push,
     },
 };
 use zenoh_result::ZResult;
@@ -214,6 +214,17 @@ pub(crate) trait HatPubSubTrait {
     ) -> Option<Arc<Resource>>;
 
     fn get_subscriptions(&self, tables: &Tables) -> Vec<(Arc<Resource>, Sources)>;
+
+    /// Buffer a data packet for a presubscribed client that has not yet reconnected.
+    /// Default no-op — only the router HAT overrides this.
+    fn buffer_for_presubscription(
+        &self,
+        _tables: &Tables,
+        _res: &Option<Arc<Resource>>,
+        _expr: &mut RoutingExpr,
+        _msg: &Push,
+        _reliability: Reliability,
+    ) {}
 
     fn compute_data_route(
         &self,

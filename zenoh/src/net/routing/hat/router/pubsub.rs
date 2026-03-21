@@ -13,7 +13,7 @@
 //
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     str::FromStr,
     sync::{atomic::Ordering, Arc},
@@ -24,12 +24,13 @@ use tokio::sync::oneshot;
 
 use petgraph::graph::NodeIndex;
 use zenoh_protocol::{
-    core::{WhatAmI, ZenohIdProto, key_expr::OwnedKeyExpr},
+    core::{Reliability, WhatAmI, ZenohIdProto, key_expr::OwnedKeyExpr},
     network::{
         declare::{
             Declare, DeclareBody, DeclarePreSubscriber, DeclareRouteUpdate, DeclareSubscriber, SubscriberId, SyncInfo, UndeclareSubscriber, common::ext::WireExprType, ext
         },
         interest::{InterestId, InterestMode},
+        Push,
     },
 };
 use zenoh_sync::get_mut_unchecked;
@@ -797,7 +798,7 @@ fn get_target_router_from_prediction() -> Option<ZenohIdProto> {
     let zid_str = match edge_ip_to_zid.get(target_edge_ip) {
         Some(zid) => *zid,
         None => {
-            tracing::error!("Unknown target_edge_ip: {}", target_edge_ip);
+            tracing::trace!("Unknown target_edge_ip: {}", target_edge_ip);
             return None;
         }
     };
@@ -1647,6 +1648,110 @@ pub(crate) fn declare_sub_interest(
     }
 }
 
+/// Called from `route_data()` (under read lock) for every incoming Push.
+/// Fast-path: returns immediately when no presubscriptions exist (`pre_subs` empty).
+/// Slow-path (handover window only): buffers the packet for any expected client
+/// that has a presubscription but has not yet (re)connected.
+pub(crate) fn buffer_for_presubscription(
+    tables: &Tables,
+    res: &Option<Arc<Resource>>,
+    expr: &mut RoutingExpr,
+    msg: &Push,
+    reliability: Reliability,
+) {
+    if tables.whatami != WhatAmI::Router {
+        return;
+    }
+    // Fast-path: no active presubscriptions at all
+    if hat!(tables).pre_subs.is_empty() {
+        return;
+    }
+
+    // Compute the full key expression once (needed for fallback match lookup).
+    let key_expr: OwnedKeyExpr = match OwnedKeyExpr::try_from(expr.full_expr()) {
+        Ok(ke) => ke,
+        Err(_) => return,
+    };
+
+    // Use precomputed matches if available; otherwise fall back to dynamic lookup.
+    // Same pattern as compute_data_route.
+    let matches: Cow<[std::sync::Weak<Resource>]> = res
+        .as_ref()
+        .and_then(|r| r.context.as_ref())
+        .map(|ctx| Cow::from(ctx.matches.as_slice()))
+        .unwrap_or_else(|| Cow::Owned(Resource::get_matches(tables, &key_expr)));
+
+    // Prefix/suffix for WireExpr remapping at flush time.
+    let (buf_prefix, buf_suffix): (Arc<Resource>, Box<str>) = match res {
+        Some(r) => (r.clone(), Box::from("")),
+        None => (expr.prefix.clone(), Box::from(expr.suffix)),
+    };
+
+    for mres_weak in matches.iter() {
+        let mres = match mres_weak.upgrade() {
+            Some(m) => m,
+            None => continue,
+        };
+        if mres.context.is_none() {
+            continue;
+        }
+        let presubs = &res_hat!(mres).presubscriptions;
+        if presubs.is_empty() {
+            continue;
+        }
+        for (client_zid, _) in presubs.iter() {
+            let connected = tables.faces.values().any(|f| f.zid == *client_zid);
+            if !connected {
+                let mut buf = hat!(tables).handover_buffer.lock().unwrap();
+                let deque = buf.entry(*client_zid).or_insert_with(VecDeque::new);
+                if deque.len() >= super::HANDOVER_BUFFER_CAPACITY {
+                    deque.pop_front();
+                }
+                deque.push_back(super::BufferedPush {
+                    push: msg.clone(),
+                    reliability,
+                    prefix: buf_prefix.clone(),
+                    suffix: buf_suffix.clone(),
+                });
+                tracing::trace!(
+                    "Buffered packet for unconnected client {}, buf_size={}",
+                    client_zid, deque.len()
+                );
+            }
+        }
+    }
+}
+
+/// Called from `new_transport_unicast_face()` after presubscriptions are activated
+/// and routes recomputed. Replays buffered packets to the newly connected client face,
+/// remapping wire expressions via `Resource::get_best_key`.
+pub(crate) fn flush_handover_buffer(tables: &Tables, face: &Arc<FaceState>) {
+    let client_zid = face.zid;
+    let packets = {
+        let mut buf = hat!(tables).handover_buffer.lock().unwrap();
+        buf.remove(&client_zid)
+    };
+    if let Some(packets) = packets {
+        tracing::debug!(
+            "Flushing {} buffered packet(s) to reconnected client {}",
+            packets.len(), client_zid
+        );
+        for buffered in packets {
+            let wire_expr = Resource::get_best_key(&buffered.prefix, &buffered.suffix, face.id).to_owned();
+            face.primitives.send_push(
+                Push {
+                    wire_expr,
+                    ext_qos: buffered.push.ext_qos,
+                    ext_tstamp: buffered.push.ext_tstamp,
+                    ext_nodeid: ext::NodeIdType { node_id: NodeId::default() },
+                    payload: buffered.push.payload,
+                },
+                buffered.reliability,
+            );
+        }
+    }
+}
+
 pub(crate) fn activate_presubscription_to_subscription(
     hat_code: &(dyn crate::net::routing::hat::HatTrait + Send + Sync),
     tables: &mut Tables,
@@ -1885,6 +1990,17 @@ impl HatPubSubTrait for HatCode {
                 )
             })
             .collect()
+    }
+
+    fn buffer_for_presubscription(
+        &self,
+        tables: &Tables,
+        res: &Option<Arc<Resource>>,
+        expr: &mut RoutingExpr,
+        msg: &Push,
+        reliability: Reliability,
+    ) {
+        buffer_for_presubscription(tables, res, expr, msg, reliability);
     }
 
     fn compute_data_route(
