@@ -832,6 +832,16 @@ pub(crate) async fn accept_link(link: LinkUnicast, manager: &TransportManager) -
         )
         .await?;
 
+    {
+        let now = std::time::SystemTime::now();
+        eprintln!(
+            "timestamp_us={} iso={} [SESSION_ACCEPT] accepted from {} to {}",
+            now.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
+            humantime::format_rfc3339_micros(now),
+            osyn_out.other_zid,
+            manager.config.zid,
+        );
+    }
     tracing::debug!(
         "New transport link accepted from {} to {}: {}",
         osyn_out.other_zid,

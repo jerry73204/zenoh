@@ -5700,6 +5700,7 @@ dependencies = [
  "flume",
  "futures",
  "futures-util",
+ "humantime",
  "lazy_static",
  "lz4_flex",
  "paste",

@@ -51,6 +51,7 @@ unstable = []
 default = ["test", "transport_multilink"]
 
 [dependencies]
+humantime = { workspace = true }
 async-trait = { workspace = true }
 crossbeam-utils = { workspace = true }
 tokio = { workspace = true, features = [

@@ -712,6 +712,16 @@ pub(crate) async fn open_link(
         )
         .await?;
 
+    {
+        let now = std::time::SystemTime::now();
+        eprintln!(
+            "timestamp_us={} iso={} [SESSION_OPEN] opened from {} to {}",
+            now.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
+            humantime::format_rfc3339_micros(now),
+            manager.config.zid,
+            iack_out.other_zid,
+        );
+    }
     tracing::debug!(
         "New transport link opened from {} to {}: {}.",
         manager.config.zid,
