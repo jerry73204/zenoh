@@ -68,6 +68,7 @@ unstable = ["internal_config", "zenoh-keyexpr/unstable"]
 internal_config = []
 
 [dependencies]
+humantime = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tokio-util = { workspace = true }
 ahash = { workspace = true }

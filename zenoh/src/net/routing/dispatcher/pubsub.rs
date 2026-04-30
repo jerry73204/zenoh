@@ -105,6 +105,19 @@ pub(crate) fn declare_subscription(
                     .update_data_routes(data_routes);
             }
             drop(wtables);
+            let full_keyexpr = res.expr();
+            if full_keyexpr == "demo/example/**" {
+                {
+                    let now = std::time::SystemTime::now();
+                    eprintln!(
+                        "timestamp_us={} iso={} [ROUTE_UPDATE] keyexpr={} from face {}",
+                        now.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
+                        humantime::format_rfc3339_micros(now),
+                        full_keyexpr,
+                        face.zid
+                    );
+                }
+            }
         }
         None => tracing::error!(
             "{} Declare subscriber {} for unknown scope {}!",

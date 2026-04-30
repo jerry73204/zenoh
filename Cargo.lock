@@ -5465,6 +5465,7 @@ dependencies = [
  "flume",
  "futures",
  "git-version",
+ "humantime",
  "inotify",
  "itertools 0.13.0",
  "json5",
