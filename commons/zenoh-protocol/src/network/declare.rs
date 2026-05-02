@@ -319,14 +319,17 @@ pub mod subscriber {
     pub type NodeId = u16;
     pub type SyncSeq = u32;
 
-    /// SyncInfo represents the synchronization identifier between routers during handover
-    /// It contains information about the target router (after handover) and a unique sequence number
+    /// Synchronization state added by the network when propagating a pre-subscription.
+    /// Contains the subscribing client's identity, the publisher router's node ID, and a
+    /// sequence number for source/target router synchronization (reserved for future use).
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     pub struct SyncInfo {
+        /// ZenohId of the client that issued the pre-subscription, extracted from the client face.
         pub subscriber_identity: ZenohIdProto,
-        /// Router NodeId after handover
+        /// NodeId of the router that publishes data for this subscription.
         pub pub_router_id: NodeId,
-        /// Unique sync sequence number for this handover
+        /// Data packet sequence number used to synchronize the source and target router during handover,
+        /// so the target knows where to resume delivery. Reserved for future use.
         pub sync_seq: SyncSeq,
     }
 
@@ -410,10 +413,10 @@ pub mod subscriber {
     /// - key_scope/key_suffix: The key expression for the pre-subscription.
     /// - est_time: The estimated time until the handover occurs, in milliseconds.
     /// - Handover Info (if H==1):
-    ///   - tgt_node_id: The NodeId of the router the client is expected to connect to after handover.
-    ///   - subscriber_id: The ZenohId of the client initiating the pre-subscription.
+    ///   - tgt_node_id: The NodeId of the router the client is expected to connect to after handover. Added by the network.
+    ///   - subscriber_id: The ZenohId of the subscribing client, extracted from the client face. Added by the network.
     ///   - pub_router_id: The NodeId of the router that will publish the data. Added by the network.
-    ///   - sync_seq: A sequence number for the handover process. Added by the network.
+    ///   - sync_seq: Data packet sequence number for source/target router synchronization so the target knows where to resume delivery. Reserved for future use. Added by the network.
     /// ```
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct DeclarePreSubscriber {
