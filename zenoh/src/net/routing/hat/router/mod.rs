@@ -440,6 +440,14 @@ impl HatBaseTrait for HatCode {
                 }
             }
             WhatAmI::Client => {
+                {
+                    let now = std::time::SystemTime::now();
+                    eprintln!(
+                        "timestamp_us={} iso={} [New face from client]",
+                        now.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
+                        humantime::format_rfc3339_micros(now),
+                    );
+                }
                 tracing::trace!("new_transport_unicast_face from client");
                 let cli_zid = face.state.zid;
                 tracing::trace!("cli_zid: {}", cli_zid);
@@ -472,6 +480,15 @@ impl HatBaseTrait for HatCode {
                                 get_mut_unchecked(&mut res)
                                     .context_mut()
                                     .update_data_routes(data_routes);
+                            }
+
+                            {
+                                let now = std::time::SystemTime::now();
+                                eprintln!(
+                                    "timestamp_us={} iso={} [Pre-Subscription data route activation done]",
+                                    now.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros(),
+                                    humantime::format_rfc3339_micros(now),
+                                );
                             }
                             // drop(wtables);
 
