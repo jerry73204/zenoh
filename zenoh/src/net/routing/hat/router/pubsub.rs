@@ -504,7 +504,7 @@ fn presubscription_preparation(
     } = sync_info;
     //
     res_hat_mut!(res).presubscriptions.insert(subscriber_identity, (id, sync_seq));
-    hat_mut!(tables).pre_subs.entry(subscriber_identity).or_default().push(res.clone());
+    hat_mut!(tables).pre_subs.entry(subscriber_identity).or_default().insert(res.clone());
     // First trigger the route update sending
     // let prev_router_id = get_
     // tables.get_face(&tables.zid).cloned().unwrap().primitives.send_declare(RoutingContext::with_expr(
@@ -828,9 +828,9 @@ fn declare_simple_presubscription(
     tracing::trace!("declare_simple_presubscription");
 
     // Store the presubscription info
-    let client_id = face.zid;
-    hat_mut!(tables).pre_subs.entry(client_id).or_default().push(res.clone());
-    face_hat_mut!(face).remote_subs.insert(id, res.clone());
+    // let client_id = face.zid;
+    // hat_mut!(tables).pre_subs.entry(client_id).or_default().insert(res.clone());
+    // face_hat_mut!(face).remote_subs.insert(id, res.clone());
 
     // Cancel any existing watcher for this face by dropping the old sender
     if let Some(old_cancel_tx) = face_hat_mut!(face).presubscription_watcher_cancel.take() {
