@@ -178,7 +178,7 @@ struct HatTables {
     linkstatepeer_tokens: HashSet<Arc<Resource>>,
     router_qabls: HashSet<Arc<Resource>>,
     linkstatepeer_qabls: HashSet<Arc<Resource>>,
-    pre_subs: HashMap<ZenohIdProto, Vec<Arc<Resource>>>,
+    pre_subs: HashMap<ZenohIdProto, HashSet<Arc<Resource>>>,
     routers_net: Option<Network>,
     linkstatepeers_net: Option<Network>,
     shared_nodes: Vec<ZenohIdProto>,
