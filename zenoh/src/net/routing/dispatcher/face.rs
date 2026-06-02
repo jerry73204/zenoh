@@ -254,6 +254,7 @@ impl Primitives for Face {
                 unregister_expr(&self.tables, &mut self.state.clone(), m.id);
             }
             zenoh_protocol::network::DeclareBody::DeclareSubscriber(m) => {
+                // eprintln!("[{}] [PACKET_COUNT] DeclareSubscriber received from {}", humantime::format_rfc3339_micros(std::time::SystemTime::now()), self.state);
                 let mut declares = vec![];
                 declare_subscription(
                     ctrl_lock.as_ref(),

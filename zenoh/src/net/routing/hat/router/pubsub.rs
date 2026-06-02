@@ -70,7 +70,9 @@ fn send_sourced_subscription_to_net_children(
                     {
                         let push_declaration = push_declaration_profile(tables, &someface);
                         let key_expr = Resource::decl_key(res, &mut someface, push_declaration);
-
+                        if res.expr() == "demo/example/**" {
+                            eprintln!("[{}] [PACKET_COUNT] DeclareSubscriber sent to {}", humantime::format_rfc3339_micros(std::time::SystemTime::now()), someface.zid);
+                        }
                         someface.primitives.send_declare(RoutingContext::with_expr(
                             Declare {
                                 interest_id: None,

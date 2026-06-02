@@ -81,6 +81,7 @@ json5 = { workspace = true }
 lazy_static = { workspace = true }
 tracing = { workspace = true }
 paste = { workspace = true }
+humantime = { workspace = true }
 petgraph = { workspace = true }
 phf = { workspace = true }
 rand = { workspace = true, features = ["default"] }

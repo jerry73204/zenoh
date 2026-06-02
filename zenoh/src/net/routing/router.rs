@@ -95,6 +95,7 @@ impl Router {
             })
             .clone();
         tracing::debug!("New {}", newface);
+        eprintln!("[{}] New {}", humantime::format_rfc3339_micros(std::time::SystemTime::now()), newface);
 
         let mut face = Face {
             tables: self.tables.clone(),
@@ -154,6 +155,7 @@ impl Router {
             })
             .clone();
         tracing::debug!("New {}", newface);
+        eprintln!("[{}] New {}", humantime::format_rfc3339_micros(std::time::SystemTime::now()), newface);
 
         let mut face = Face {
             tables: self.tables.clone(),
