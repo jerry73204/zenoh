@@ -75,6 +75,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
+humantime = { workspace = true }
 git-version = { workspace = true }
 itertools = { workspace = true }
 json5 = { workspace = true }
