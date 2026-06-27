@@ -7,7 +7,7 @@
 **Unblocks:** 07.
 
 ## Deliverables
-1. **Publisher GBR declaration** ([P1](../issues/class-P-protocol.md)): publishers are implicit today (no `DeclarePublisher`). Add a hard-state declaration carrying GBR. **Hard-state, no refresh** — rebuilt on reconnect via `initial_interest` pull (Zenoh's actual model; better than soft-state — no refresh flood).
+1. **Publisher GBR declaration** ([P1](../issues/class-P-protocol.md)): publishers are implicit today (no `DeclarePublisher`). Add a hard-state declaration carrying GBR **+ an HLC birth-epoch stamped once at declaration** (the admission incumbency key, [07](07-deterministic-admission.md) / [A-D](../issues/class-A-algorithm.md)) — immutable across refresh/reconnect. **Hard-state, no refresh** — rebuilt on reconnect via `initial_interest` pull (Zenoh's actual model; better than soft-state — no refresh flood).
 2. **GBR lifetime = declaring face** ([R5](../issues/class-R-runtime.md)): auto-undeclare on face close (as subs already do, `face.rs:728`) so dead-publisher reservations don't linger past failure detection.
 3. **Ingress token-bucket policing** ([R2](../issues/class-R-runtime.md)): shape/mark at the publisher's first hop to the declared GBR. New mechanism — none exists today.
 4. Optional **end-to-end backpressure** signal ([R4](../issues/class-R-runtime.md)) or accept reactive-only accounting (congested link drops silently today).

@@ -8,7 +8,7 @@
 
 ## Deliverables
 1. **Derived load**: `load(e) = Σ_{f: e∈tree(f,DB)} b_f` — pure function of the flooded DB (Zenoh already computes trees deterministically). No reservation state stored.
-2. **Total-order admission** on **immutable** keys: `f ≺ g ⇔ (prio,ZID)` lex. **Never seqno** (refresh bumps it → [S3](../issues/oscillation.md)). Admit in `≺` order, each consuming residual.
+2. **Total-order admission** on **immutable** keys: `f ≺ g ⇔ (prio, HLC-birth-epoch, ZID)` lex. **Never link-state `sn`** (bumps on refresh → [S3](../issues/oscillation.md)). HLC epoch = physical-time **incumbency** (frozen at declaration, skew-tolerant, determinism-safe; clamp clock-poisoning, restart=newcomer). Admit in `≺` order, each consuming residual.
 3. **Integer/fixed-point** path computation ([J](../issues/class-A-algorithm.md)): replace the current `f64` graph (`network.rs:144-145`) — f64 diverges across arch → breaks consensus.
 4. **Versioned admission function** ([I](../issues/class-A-algorithm.md)): flood version, activate-on-all-agree → no rolling-upgrade split-brain.
 5. **Scope to the low-churn backbone** ([A](../issues/class-A-algorithm.md), [E](../issues/class-A-algorithm.md)): bounds the `O(flows×CSPF)` recompute and the consistency window. Edge = best-effort.

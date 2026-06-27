@@ -164,13 +164,20 @@ Multicast-correct: a flow counts **once per link** its tree crosses, not once pe
 
 ### 8.2 Determinism replaces signaling
 
-No central PCE and no RSVP-style hop-by-hop signaling. Instead every router runs the **same** admission function on the DB. Flows are admitted in a global total order on **immutable** keys only:
+No central PCE and no RSVP-style hop-by-hop signaling. Instead every router runs the **same** admission function on the DB. Flows are admitted in a global total order keyed on **immutable** values:
 
 $$
-f \prec g \iff (\text{prio}_f,\ \text{ZID}_f) <_{\text{lex}} (\text{prio}_g,\ \text{ZID}_g)
+f \prec g \iff (\text{prio}_f,\ \text{epoch}_f,\ \text{ZID}_f) <_{\text{lex}} (\text{prio}_g,\ \text{epoch}_g,\ \text{ZID}_g)
 $$
 
-**Not seqno** — seqno changes on every soft-state refresh, and putting it in the order makes the preempted flow re-win on refresh → ping-pong (§10, S3). seqno is used only for staleness/freshness detection, never for ordering. Admit flows in `≺` order, each consuming residual capacity left by predecessors. Every node independently reaches the **same** admit/reject/preempt decision ⇒ routers are **replicated deterministic PCEs**, consistent by determinism not coordination. No SPOF: any router dies, others already hold identical derived state.
+- **`epoch` = a Hybrid Logical Clock (HLC) birth timestamp**, assigned **once** when the flow is first declared, carried hard-state, **never changed** on refresh/reconnect. Lower epoch = older = wins ⇒ **incumbency / FCFS**: an established flow is not bumped by an equal-priority newcomer.
+- **Why HLC, not link-state `sn`:** `sn` (`network.rs:588`) is the LSP *version* number — bumps on every change, and versions a *node's link-state*, not a flow. Using it would (a) re-order on every refresh → ping-pong (§10, S3) and (b) is the wrong object. `sn` stays purely for staleness detection.
+- **Why HLC, not pure Lamport or raw physical time:** incumbency is a *physical-time* notion, and flows from different publishers are usually causally *concurrent* — pure Lamport orders those by an arbitrary counter (wrong winner). HLC pins to physical time (`|l−pt| ≤ ε`) so concurrent flows order by who is actually older, while staying monotonic and skew-tolerant (no clock sync). Precedent: CockroachDB, MongoDB.
+- **Determinism-safe:** HLC generation is nondeterministic (local clock), but the epoch is *frozen at declaration and flooded hard-state* — every node reads the same `(l,c,ZID)` → identical `≺`. The nondeterminism never enters cross-node comparison. Integer (~64-bit: 48-bit ms + 16-bit counter), satisfies the §9-J determinism rule.
+
+Admit flows in `≺` order, each consuming residual capacity left by predecessors. Every node independently reaches the **same** admit/reject/preempt decision ⇒ routers are **replicated deterministic PCEs**, consistent by determinism not coordination. No SPOF: any router dies, others already hold identical derived state.
+
+**Two HLC caveats:** (1) **Clock-poisoning** — HLC adopts `max(local_pt, received_l)`, so one far-future clock drags the network's `l` forward irrecoverably; **clamp** by ignoring remote `l > local_pt + maxOffset` (standard HLC defense). (2) **Restart = newcomer** — crash-restart → re-declare → new HLC → loses incumbency; acceptable (new flow instance), persisting it would fight statelessness.
 
 - **Preemption with no notification:** a lower-priority flow that loses the `≺` contest on an oversubscribed link is preempted; its source computes the same function → independently knows → recomputes its own detour. No PathErr loop.
 - **Fast rejoin:** restarted peer floods "back" → neighbors re-advertise DB → peer recomputes trees+loads+forwarding in one flood cycle.

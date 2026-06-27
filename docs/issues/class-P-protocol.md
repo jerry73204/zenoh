@@ -4,7 +4,7 @@ New wire messages or header fields. Each field is forever → version-gate, keep
 
 | ID | Title | Status | Phase | Code anchor | Spec needed |
 |----|-------|--------|-------|-------------|-------------|
-| P1 | **Publisher GBR declaration** — publishers are *implicit* (inferred from traffic); no `DeclarePublisher` message exists. | open | [P6](../phases/06-gbr-declaration-policing.md) | `commons/zenoh-protocol/src/network/declare.rs` (no publisher variant) | new declaration message/field carrying GBR (hard-state, lifetime = face) |
+| P1 | **Publisher GBR declaration** — publishers are *implicit* (inferred from traffic); no `DeclarePublisher` message exists. | open | [P6](../phases/06-gbr-declaration-policing.md) | `commons/zenoh-protocol/src/network/declare.rs` (no publisher variant) | new declaration carrying GBR **+ an HLC birth-epoch stamped once** (admission incumbency key, [A-D](class-A-algorithm.md)); hard-state, lifetime = face |
 | P2 | **Segment stack** — extend `NodeId` routing-context ext `0x3` (single `u16`) → `SegmentList`. | open | [P3](../phases/03-segment-stack-ext.md) | `network/push.rs:63` (ext 0x3, `NodeIdType.node_id:u16`) | list-typed ext; empty = legacy single-hop behavior |
 | P3 | **Scope tag + detour-flag** on detoured packets (coarse region/edge-node set). | open | [P8](../phases/08-multicast-scoped-detour.md) | rides on the P2 ext | scope field + flag; honored end-to-end to region-local delivery |
 | P4 | **Per-link capacity `C_e`** carried in link-state. | open | [P1](../phases/01-observability-capacity-signal.md) | `linkstate.rs:69` (weight `u16` exists); `network.rs:148` `link_weights` | extend LSP with capacity (integer) |
