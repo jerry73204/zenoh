@@ -1,6 +1,6 @@
 # Phase 04 — Fast-reroute + fast liveness
 
-**Goal:** survive single link/node failure with sub-second detour, not the current up-to-10 s black hole.
+**Goal:** survive single link/node failure with sub-second detour, not the current up-to-10 s black hole. Failure is the *transient* half of the [two-timescale model](../design/qos-fault-routing.md) (qos §8.7): SR detours locally, link-state converges, SR retracts.
 
 **Depends on:** [03](03-segment-stack-ext.md) (segment stack for repair path).
 **Delivers:** [R1](../issues/class-R-runtime.md), [R6](../issues/class-R-runtime.md), [S2](../issues/oscillation.md), [S4](../issues/oscillation.md).

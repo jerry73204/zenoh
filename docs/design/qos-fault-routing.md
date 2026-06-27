@@ -236,6 +236,41 @@ Worked example — publisher `P`, subscribers `A`,`B`; `P→A` direct, `P→M→
 1. **Inconsistent tree** (issue A — `P`,`M`,`N` hold divergent DB views) → the partition disagrees → `A` in two branches (dup) or zero (gap). Hard guarantee only at quiescence; best-effort during convergence. Load-bearing assumption.
 2. **Reverting to greedy match on a detour packet.** If a downstream node drops the detour-flag/scope early, it re-fans-out to `A`. Enforce: **flag + scope ride until region-local delivery.**
 
+## 8.7 Two-timescale rerouting: SR transient, link-state permanent
+
+The keystone unification. **Segment Routing is a fast temporary data-plane patch; link-state is the slow permanent control-plane fix. SR buys time until the floods converge, then SR retracts.** Both failure and BW/priority rerouting are the *same* mechanism on two timescales.
+
+| | Fast path (SR) | Slow path (link-state) |
+|--|----------------|------------------------|
+| plane | data | control |
+| scope | local (node that sees the problem) | global (floods to all) |
+| speed | ~ms (push a segment) | flood + 100 ms recompute |
+| lifetime | **transient** — retracts on convergence | **permanent** — the new normal tree |
+| state | ephemeral per-repair at one node | derived tree at every node |
+
+### The two-phase, identical for failure and TE
+1. A node observes the problem (link down / link full) → **pushes an SR detour immediately**.
+2. The cause propagates in link-state → every node recomputes → the new tree natively avoids it (routing converges).
+3. The detour node sees the converged path → **stops pushing SR** → traffic rides the native tree. SR was scaffolding.
+
+### The condition that closes the loop
+Convergence happens **only if the cause is in the flooded link-state**:
+- **Failure** = topology change → already flooded (`sn++` withdrawal, `network.rs:966`). Converges natively.
+- **BW/priority** = the **per-link load must be flooded** ([§2.1](#), P4). Only then does every node — including ingress `P` — recompute the same avoidance and the SR retract. **Without flooded load, a TE detour becomes permanent standing per-flow state** = the stateless-core violation we avoid. So flooded load is to TE what topology withdrawal is to failure — *the thing that makes the detour retract*.
+
+### Where the segment stack is imposed (push point)
+| Regime | Who pushes | How the decision reaches the pusher |
+|--------|-----------|-------------------------------------|
+| Failure repair (transient) | **M (point of local repair)**, local | n/a — local, ephemeral; faster than any signaling |
+| Stable TE, intra-region | **P (ingress)** | *derived* from flooded load — `P` runs the same CSPF on the same DB → computes the same waypoint `M` would. **Consistency by determinism, no `M→P` message.** |
+| Stable TE, cross-region | **P pushes a binding SID** | `M`/region-gateway abstracts its sub-path as one segment; `P` references it, `M` expands it. Keeps `P`'s stack short, `M` owns local detail. |
+
+Steady state = **"P does the SR, downstream nodes do simple (loose-segment) source routing."** During the lag before `P` recomputes, **M does a transient local bridge** (mirror of failure repair), then `P` takes over and `M` stops — use make-before-break + a marker (M sees packets already carrying `P`'s stack → handled → drop local push) to avoid a nested double-detour.
+
+### Caveats
+- **Load must be damped/quantized** ([§10 S1](#)) — flapping load → flapping tree → SR never settles. Bounded metric + EWMA + hold-down (the §2 damping) is what lets it *converge* instead of oscillate.
+- **Convergence is steady-state** — under continuous churn it never fully settles, so some SR is always active. Same root caveat: steady-state-hard, transient-best-effort.
+
 ## 9. Design issues (audit)
 
 Severity: 🔴 fundamental · 🟠 major · 🟡 manageable.
