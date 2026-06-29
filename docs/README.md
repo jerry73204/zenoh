@@ -13,9 +13,10 @@ Exploration / design notes for bandwidth-aware, priority-enabled, fault-tolerant
 ## Reading order
 
 1. [`design/auto-routing-economics.md`](design/auto-routing-economics.md) — when to be router/peer/client; cost & economy model.
-2. [`design/qos-fault-routing.md`](design/qos-fault-routing.md) — bandwidth/priority/fault design, deterministic admission, multicast scoped-detour, oscillation, code reality-check.
-3. [`phases/README.md`](phases/README.md) — the build roadmap (dependency graph + phases 0–9).
-4. [`issues/README.md`](issues/README.md) — the issue tracker.
+2. [`design/qos-fault-routing.md`](design/qos-fault-routing.md) — bandwidth/priority/fault design, deterministic admission, multicast scoped-detour, two-timescale rerouting, oscillation, code reality-check.
+3. [`design/sr-stateless-features.md`](design/sr-stateless-features.md) — features SR + stateless unlock beyond the core (SFC, Flex-Algo slices, IOAM telemetry, DetNet, LISP mobility, anycast); stateful-vs-stateless (NDN) axis.
+4. [`phases/README.md`](phases/README.md) — the build roadmap (dependency graph + phases 0–9).
+5. [`issues/README.md`](issues/README.md) — the issue tracker.
 
 ## One-line thesis
 
