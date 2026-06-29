@@ -21,6 +21,7 @@ Logic, consistency, stability, scaling. Cannot be "added" — must be *designed 
 |----|-------|-----|--------|-----|
 | A-MC1 | **Deterministic multicast-tree approximation** — BW-constrained Steiner tree is NP-hard; need an approximation all nodes compute identically. | 🟠 | research | deterministic greedy (add subs in `≺` order via CSPF to nearest on-tree node); quality bound open |
 | A-MC2 | **Scope/region assignment determinism at scale** — detour scope (and any BIER bit) must be stable + derivable from DB. | 🟠 | research | stable low-churn region IDs from DB; sticky assignment |
+| A-NC | **Deadline-aware (network-calculus) admission** — extend BW admission to a worst-case-delay feasibility test for hard-RT control flows. | 🟠 | mitigation-known | per-flow `(r,b)` arrival curves + rate-latency service curves; admit iff every control flow's `D^{e2e} ≤ deadline`; computable from flooded shaped-rate DB. See [mixed-criticality §4](../design/mixed-criticality-rt.md) |
 
 ## Cross-refs
 - Oscillation sub-family (S1–S8): [oscillation.md](oscillation.md).
