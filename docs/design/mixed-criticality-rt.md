@@ -73,6 +73,12 @@ What each mechanism does to the bound:
 
 **Why ATS over TAS for Zenoh:** TAS (802.1Qbv) needs network-wide synchronized clocks + a computed gate schedule (802.1Qcc, centrally). That fights Zenoh's decentralized, no-sync, no-admin grain. **Asynchronous Traffic Shaping (802.1Qcr)** gives bounded latency *without* synchronized clocks — the same philosophical fit as deterministic-from-flooded-DB and HLC (no central clock). Recent in-car-network work shows ATS + redundancy avoids unbounded latency. Recommend ATS, not TAS.
 
+**Why ATS is clock-free** (802.1Qcr / Urgency-Based Scheduler): it **re-shapes each flow back to its `(r,b)` token bucket at every hop**, computing each packet's *eligibility time* from **local** elapsed time (Δt on the node's own clock), never a shared timestamp.
+- **TAS is time-triggered** — gates open at absolute time `T` → every switch must agree *when* `T` is → **phase/offset sync** (gPTP). **ATS is rate-triggered** — a packet is eligible after a local Δt → each hop reshapes on its **own free-running clock** → needs only **frequency** accuracy (ppm), **not phase**. No gPTP, no shared epoch.
+- Affordable because **"regulators are shaping-for-free"** (Le Boudec 2018): a per-flow shaper placed after a FIFO adds **zero** to the worst-case delay bound. So reshaping every hop keeps burst `b` constant hop-to-hop → tight per-hop bounds → e2e = sum, with no inter-hop coordination.
+- Precise: **synchronization-free, not clockless** — assumes only bounded clock *frequency* error (a ppm margin in the bound), the accuracy every oscillator already has.
+- **Honest tension:** ATS reintroduces a small **per-flow shaper state** per hop (a token bucket = a few counters), only for the RT class (few flows). Not fully stateless — RT hardness costs a little local state, like FRER costs 2× bandwidth. Lesser evil than TAS's clock+schedule.
+
 ## 7. The recipe (putting it together)
 
 1. **Classify** flows → priorities: control→RealTime/InteractiveHigh, sensor→DataHigh, background→Background, events→InteractiveHigh.
