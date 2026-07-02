@@ -16,8 +16,9 @@ Exploration / design notes for bandwidth-aware, priority-enabled, fault-tolerant
 2. [`design/qos-fault-routing.md`](design/qos-fault-routing.md) — bandwidth/priority/fault design, deterministic admission, multicast scoped-detour, two-timescale rerouting, oscillation, code reality-check.
 3. [`design/sr-stateless-features.md`](design/sr-stateless-features.md) — features SR + stateless unlock beyond the core (SFC, Flex-Algo slices, IOAM telemetry, DetNet, LISP mobility, anycast); stateful-vs-stateless (NDN) axis.
 4. [`design/mixed-criticality-rt.md`](design/mixed-criticality-rt.md) — deterministic RT for mixed flows (control + sensor + background); network-calculus latency bounds, FRER, ATS; Zenoh RT gaps. The robotics/AV case.
-5. [`phases/README.md`](phases/README.md) — the build roadmap (dependency graph + phases 0–9).
-6. [`issues/README.md`](issues/README.md) — the issue tracker.
+5. [`design/zenoh-routing-readiness.md`](design/zenoh-routing-readiness.md) — **review** of Zenoh's actual routing vs the 4 goals (deterministic / bounded-latency / BW-guaranteed / mixed-flow): scorecard, blockers, first-cut plan. The gap analysis.
+6. [`phases/README.md`](phases/README.md) — the build roadmap (dependency graph + phases 0–9).
+7. [`issues/README.md`](issues/README.md) — the issue tracker.
 
 ## One-line thesis
 
