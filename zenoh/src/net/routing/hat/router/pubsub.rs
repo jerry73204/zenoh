@@ -23,6 +23,8 @@ use std::{
 use tokio::sync::oneshot;
 
 use petgraph::graph::NodeIndex;
+use zenoh_buffers::writer::HasWriter;
+use zenoh_codec::{WCodec, Zenoh080};
 use zenoh_protocol::{
     core::{Reliability, WhatAmI, ZenohIdProto, key_expr::OwnedKeyExpr},
     network::{
@@ -125,23 +127,26 @@ fn send_presubscription_to_target_direction(
                         let push_declaration = push_declaration_profile(tables, &someface);
                         let key_expr = Resource::decl_key(res, &mut someface, push_declaration);
                         tracing::trace!("send_presubscription_to_target_direction {}",someface.zid);
-                        eprintln!("[{}] [PACKET_COUNT] DeclarePreSubscriber sent to {} via {}", humantime::format_rfc3339_micros(std::time::SystemTime::now()), target_router, someface.zid);
-                        someface.primitives.send_declare(RoutingContext::with_expr(
-                            Declare {
-                                interest_id: None,
-                                ext_qos: ext::QoSType::DECLARE,
-                                ext_tstamp: None,
-                                ext_nodeid: ext::NodeIdType {
-                                    node_id: routing_context,
-                                },
-                                body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
-                                    target_router_id: Some(target_router_id),
-                                    sync_info: Some(sync_info),
-                                    id, // Propagate the client subscription id
-                                    wire_expr: key_expr,
-                                    estimated_time,
-                                }),
+                        let declare = Declare {
+                            interest_id: None,
+                            ext_qos: ext::QoSType::DECLARE,
+                            ext_tstamp: None,
+                            ext_nodeid: ext::NodeIdType {
+                                node_id: routing_context,
                             },
+                            body: DeclareBody::DeclarePreSubscriber(DeclarePreSubscriber {
+                                target_router_id: Some(target_router_id),
+                                sync_info: Some(sync_info),
+                                id, // Propagate the client subscription id
+                                wire_expr: key_expr,
+                                estimated_time,
+                            }),
+                        };
+                        let mut buf: Vec<u8> = vec![];
+                        let _ = Zenoh080::new().write(&mut buf.writer(), &declare);
+                        eprintln!("[{}] [PACKET_COUNT] DeclarePreSubscriber sent to {} via {} size={}B", humantime::format_rfc3339_micros(std::time::SystemTime::now()), target_router, someface.zid, buf.len());
+                        someface.primitives.send_declare(RoutingContext::with_expr(
+                            declare,
                             res.expr(),
                         ));
                     }
@@ -184,22 +189,25 @@ fn send_routeupdate_to_convergence(
                             let push_declaration = push_declaration_profile(tables, &someface);
                             let key_expr = Resource::decl_key(res, &mut someface, push_declaration);
                             tracing::trace!("send_routeupdate_to_convergence {}",someface.zid);
-                            eprintln!("[{}] [PACKET_COUNT] DeclareRouteUpdate sent to {}", humantime::format_rfc3339_micros(std::time::SystemTime::now()), someface.zid);
-                            someface.primitives.send_declare(RoutingContext::with_expr(
-                                Declare {
-                                    interest_id: None,
-                                    ext_qos: ext::QoSType::DECLARE,
-                                    ext_tstamp: None,
-                                    ext_nodeid: ext::NodeIdType {
-                                        node_id: routing_context,
-                                    },
-                                    body: DeclareBody::DeclareRouteUpdate(DeclareRouteUpdate {
-                                        pub_router_id,
-                                        prev_router_id: originsub_tree_sid as u16,
-                                        wire_expr: key_expr,
-                                        estimated_time,
-                                    }),
+                            let declare = Declare {
+                                interest_id: None,
+                                ext_qos: ext::QoSType::DECLARE,
+                                ext_tstamp: None,
+                                ext_nodeid: ext::NodeIdType {
+                                    node_id: routing_context,
                                 },
+                                body: DeclareBody::DeclareRouteUpdate(DeclareRouteUpdate {
+                                    pub_router_id,
+                                    prev_router_id: originsub_tree_sid as u16,
+                                    wire_expr: key_expr,
+                                    estimated_time,
+                                }),
+                            };
+                            let mut buf: Vec<u8> = vec![];
+                            let _ = Zenoh080::new().write(&mut buf.writer(), &declare);
+                            eprintln!("[{}] [PACKET_COUNT] DeclareRouteUpdate sent to {} size={}B", humantime::format_rfc3339_micros(std::time::SystemTime::now()), someface.zid, buf.len());
+                            someface.primitives.send_declare(RoutingContext::with_expr(
+                                declare,
                                 res.expr(),
                             ));
                         }
