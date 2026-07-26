@@ -18,6 +18,8 @@ use std::{
 };
 
 use petgraph::graph::NodeIndex;
+use zenoh_buffers::writer::HasWriter;
+use zenoh_codec::{WCodec, Zenoh080};
 use zenoh_protocol::{
     core::{key_expr::OwnedKeyExpr, WhatAmI, ZenohIdProto},
     network::{
@@ -70,22 +72,25 @@ fn send_sourced_subscription_to_net_children(
                     {
                         let push_declaration = push_declaration_profile(tables, &someface);
                         let key_expr = Resource::decl_key(res, &mut someface, push_declaration);
+                        let declare = Declare {
+                            interest_id: None,
+                            ext_qos: ext::QoSType::DECLARE,
+                            ext_tstamp: None,
+                            ext_nodeid: ext::NodeIdType {
+                                node_id: routing_context,
+                            },
+                            body: DeclareBody::DeclareSubscriber(DeclareSubscriber {
+                                id: 0, // Sourced subscriptions do not use ids
+                                wire_expr: key_expr,
+                            }),
+                        };
                         if res.expr() == "demo/example/**" {
-                            eprintln!("[{}] [PACKET_COUNT] DeclareSubscriber sent to {}", humantime::format_rfc3339_micros(std::time::SystemTime::now()), someface.zid);
+                            let mut buf: Vec<u8> = vec![];
+                            let _ = Zenoh080::new().write(&mut buf.writer(), &declare);
+                            eprintln!("[{}] [PACKET_COUNT] DeclareSubscriber sent to {} size={}B", humantime::format_rfc3339_micros(std::time::SystemTime::now()), someface.zid, buf.len());
                         }
                         someface.primitives.send_declare(RoutingContext::with_expr(
-                            Declare {
-                                interest_id: None,
-                                ext_qos: ext::QoSType::DECLARE,
-                                ext_tstamp: None,
-                                ext_nodeid: ext::NodeIdType {
-                                    node_id: routing_context,
-                                },
-                                body: DeclareBody::DeclareSubscriber(DeclareSubscriber {
-                                    id: 0, // Sourced subscriptions do not use ids
-                                    wire_expr: key_expr,
-                                }),
-                            },
+                            declare,
                             res.expr(),
                         ));
                     }
