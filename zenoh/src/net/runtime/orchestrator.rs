@@ -1588,3 +1588,146 @@ fn map_ip_to_endpoint(ip: &str) -> Option<EndPoint> {
         None
     }
 }
+
+/// Router-side handover watcher: closes the departing client's transport as soon
+/// as the ns-3 handover marker reports handover_success, instead of waiting for
+/// the client's Close to arrive over the now half-dead link. Without this, data
+/// queued to the dead client link congests its TX pipeline and non-droppable
+/// pushes head-of-line block the router's forwarding path for wait_before_close
+/// (5s) units, until the 10s lease kills every inter-router session.
+pub async fn spawn_router_handover_watcher(runtime: Runtime, transport: TransportUnicast) {
+    // Initialize with current timestamp to avoid re-triggering on existing event
+    let mut last_timestamp: Option<u64> = get_current_handover_timestamp(HANDOVER_FILE);
+    let cancellation_token = runtime.get_cancellation_token();
+
+    #[cfg(target_os = "linux")]
+    {
+        use inotify::{Inotify, WatchMask};
+        use std::ffi::OsStr;
+        use std::sync::Arc;
+
+        let inotify = match Inotify::init() {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::error!("Handover watcher: failed to init inotify: {}", e);
+                return;
+            }
+        };
+
+        // Always watch the directory to handle file recreation (new inode)
+        const WATCH_DIR: &str = "/mnt";
+        const WATCH_FILENAME: &str = "ns3_handover_event.json";
+
+        if let Err(e) = inotify.watches().add(
+            WATCH_DIR,
+            WatchMask::MODIFY | WatchMask::CLOSE_WRITE | WatchMask::CREATE | WatchMask::MOVED_TO,
+        ) {
+            tracing::error!("Handover watcher: failed to add watch for {}: {}", WATCH_DIR, e);
+            return;
+        }
+
+        tracing::info!("Handover watcher: monitoring {} via inotify", WATCH_DIR);
+
+        // Use Arc<Mutex> to share inotify between blocking thread and async task
+        let inotify = Arc::new(std::sync::Mutex::new(inotify));
+
+        loop {
+            let has_event = tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    tracing::debug!("Handover watcher: cancelled");
+                    break;
+                }
+                result = {
+                    let inotify = inotify.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut buffer = [0; 1024];
+                        let mut inotify = inotify.lock().unwrap();
+                        // This blocks until events arrive (sub-millisecond response)
+                        match inotify.read_events_blocking(&mut buffer) {
+                            Ok(events) => {
+                                // Check if any event is for our target file
+                                events.into_iter().any(|event| {
+                                    event.name == Some(OsStr::new(WATCH_FILENAME))
+                                })
+                            }
+                            Err(e) => {
+                                tracing::error!("Handover watcher: inotify error: {}", e);
+                                false
+                            }
+                        }
+                    })
+                } => {
+                    match result {
+                        Ok(has_event) => has_event,
+                        Err(e) => {
+                            tracing::error!("Handover watcher: spawn_blocking error: {}", e);
+                            false
+                        }
+                    }
+                }
+            };
+
+            if has_event {
+                if read_close_event(HANDOVER_FILE, &mut last_timestamp).is_some() {
+                    tracing::info!("Handover detected, closing client face");
+
+                    // Close current transport
+                    if let Err(e) = transport.close().await {
+                        tracing::warn!("Handover watcher: failed to close transport: {}", e);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        tracing::info!("Handover watcher: using polling fallback (non-Linux)");
+
+        loop {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    tracing::debug!("Handover watcher: cancelled");
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if read_close_event(HANDOVER_FILE, &mut last_timestamp).is_some() {
+                        tracing::info!("Handover detected, closing client face");
+
+                        // Close current transport
+                        if let Err(e) = transport.close().await {
+                            tracing::warn!("Handover watcher: failed to close transport: {}", e);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn read_close_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<()> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let event = json.get("event")?.as_str()?;
+    if event != "handover_success" {
+        return None;
+    }
+    tracing::trace!("event type: {}", event);
+    let timestamp = json.get("timestamp_ms")?.as_u64()?;
+    if Some(timestamp) == *last_timestamp {
+        return None; // Already processed this event
+    }
+    *last_timestamp = Some(timestamp);
+    Some(())
+}
+
+/// Read the current timestamp from the handover event file (if it exists)
+/// Used to initialize the watcher so it doesn't re-trigger on existing events
+fn get_current_handover_timestamp(path: &str) -> Option<u64> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("timestamp_ms")?.as_u64()
+}

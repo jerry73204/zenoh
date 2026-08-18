@@ -423,6 +423,37 @@ impl TransportEventHandler for RuntimeTransportEventHandler {
                         });
                     }
                 }
+                // Spawn handover watcher for the router's client connection.
+                // Closing the client face at the handover marker (instead of waiting
+                // for the client's Close over the now half-dead link) prevents the
+                // dead link's TX pipeline from congesting and head-of-line blocking
+                // the router's forwarding path in wait_before_close units.
+                else if runtime.whatami() == WhatAmI::Router && peer.whatami == WhatAmI::Client {
+                    let (is_handover_aware, handover_client_zid) = {
+                        let config = runtime.state.config.lock();
+                        (
+                            zenoh_config::is_handover_aware_mode(&config.0),
+                            config.0.connect().handover_client_zid().clone(),
+                        )
+                    };
+
+                    // Only watch the client named by handover_client_zid
+                    let should_watch = match &handover_client_zid {
+                        Some(zid) => peer.zid == ZenohIdProto::from(*zid),
+                        None => false,
+                    };
+
+                    if is_handover_aware && should_watch {
+                        let runtime_clone = runtime.clone();
+                        runtime.spawn(async move {
+                            orchestrator::spawn_router_handover_watcher(
+                                runtime_clone,
+                                transport_for_watcher,
+                            )
+                            .await;
+                        });
+                    }
+                }
 
                 Ok(session)
             }
