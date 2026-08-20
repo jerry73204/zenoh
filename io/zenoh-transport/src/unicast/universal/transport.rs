@@ -134,6 +134,16 @@ impl TransportUnicastUniversal {
         // Delete the transport on the manager
         let _ = self.manager.del_transport_unicast(&self.config.zid).await;
 
+        // Notify the callback BEFORE closing the links: the callback removes the
+        // face from the routing tables, and link close can stall on a TX task
+        // parked in a write to a vanished peer. Keeping the face alive meanwhile
+        // lets inbound traffic keep routing into the dead link's pipeline, where
+        // non-droppable pushes block for wait_before_close holding the stage-in
+        // mutex -- freezing the whole router until the lease kills its sessions.
+        if let Some(cb) = callback.as_ref() {
+            cb.closed();
+        }
+
         // Close all the links
         let mut links = {
             let mut l_guard = zwrite!(self.links);
@@ -143,11 +153,6 @@ impl TransportUnicastUniversal {
         };
         for l in links.drain(..) {
             let _ = l.close().await;
-        }
-
-        // Notify the callback that we have closed the transport
-        if let Some(cb) = callback.as_ref() {
-            cb.closed();
         }
 
         Ok(())

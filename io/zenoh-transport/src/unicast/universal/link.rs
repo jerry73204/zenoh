@@ -162,7 +162,21 @@ impl TransportLinkUnicastUniversal {
         self.tracker.close();
         self.token.cancel();
         self.pipeline.disable();
-        self.tracker.wait().await;
+        // The TX task can be parked inside an un-cancellable send_batch().await
+        // on a link whose peer has silently vanished (e.g. a mobile client whose
+        // tunnel moved at handover with a full TCP send window). Joining it
+        // unbounded would stall this close -- and with it the face removal that
+        // delete() performs afterwards -- for the length of a TCP retransmission
+        // timeout. Bound the join and force-close the link instead.
+        if tokio::time::timeout(Duration::from_millis(500), self.tracker.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "{}: tasks did not terminate within 500ms, force-closing link",
+                self.link
+            );
+        }
 
         self.link.close(None).await
     }
