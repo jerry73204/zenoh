@@ -1560,15 +1560,25 @@ fn read_handover_event(path: &str, last_timestamp: &mut Option<u64>) -> Option<E
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
 
     let event = json.get("event")?.as_str()?;
-    // Accept both handover_start and handover_success events
-    // (handover_start may be missed due to 2ms interval between events)
-    if event != "handover_start" {
+    // Accept both handover_start and handover_success. ns-3 writes them 2ms
+    // apart to the same file, so a delayed or coalesced inotify wake can read
+    // the file only after handover_success has overwritten handover_start.
+    // Matching only handover_start then misses the handover entirely and
+    // strands the client on the old router until the next handover.
+    if event != "handover_start" && event != "handover_success" {
         return None;
     }
 
     let timestamp = json.get("timestamp_ms")?.as_u64()?;
     if Some(timestamp) == *last_timestamp {
         return None; // Already processed this event
+    }
+    // The success event of an already-processed start is a duplicate: the pair
+    // is 2ms apart in sim time while real handovers are seconds apart.
+    if let Some(last) = *last_timestamp {
+        if timestamp.saturating_sub(last) < 1000 {
+            return None;
+        }
     }
     *last_timestamp = Some(timestamp);
 
