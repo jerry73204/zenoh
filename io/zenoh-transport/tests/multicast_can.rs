@@ -17,10 +17,11 @@
 //! These need a `vcan0` interface, which creating requires root:
 //!
 //! ```sh
-//! sudo modprobe vcan
-//! sudo ip link add dev vcan0 type vcan
-//! sudo ip link set up vcan0
+//! ci/vcan-setup.sh
 //! ```
+//!
+//! which is the equivalent of `modprobe vcan`, `ip link add dev vcan0 type
+//! vcan` and `ip link set up vcan0`.
 //!
 //! They are `#[ignore]`d so no CI job runs them by accident, and they also skip
 //! at runtime with an explanation when the interface is absent, so running them
@@ -87,12 +88,7 @@ mod tests {
         if std::path::Path::new(&format!("/sys/class/net/{DEVICE}")).exists() {
             return true;
         }
-        println!(
-            "SKIPPING: no `{DEVICE}` interface. Create one with:\n  \
-             sudo modprobe vcan\n  \
-             sudo ip link add dev {DEVICE} type vcan\n  \
-             sudo ip link set up {DEVICE}"
-        );
+        println!("SKIPPING: no `{DEVICE}` interface. Create one with `ci/vcan-setup.sh`.");
         false
     }
 
