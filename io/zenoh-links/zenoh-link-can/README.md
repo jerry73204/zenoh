@@ -29,10 +29,25 @@ can/<device>#bitrate=500000;dbitrate=2000000;id=0x100;match=0;mask=0
 | `id` | **this** peer's identifier, and its address on the bus |
 | `match` | accept frames whose `(id & mask) == match` |
 | `mask` | `0`, the default, accepts every identifier on the bus |
+| `so_rcvbuf` | receive buffer in bytes. Absent, the kernel default applies |
 
 On Linux the bit rates are advisory: rates are set out of band with `ip link set can0 type can bitrate ...`, and a virtual interface has none at all. `dbitrate` is still load-bearing, because `0` selects classic framing.
 
 The MTU is 63 bytes with CAN FD and 7 with classic CAN — one frame, less a one-byte length prefix. The link reports the mode it actually obtained rather than the one requested.
+
+### `so_rcvbuf`, and when it matters
+
+Frames arriving faster than the link drains them are dropped by the kernel,
+silently, before the link sees them. A real bus cannot outrun the reader:
+2 Mbit/s of CAN FD is under 2 800 frames per second. A **virtual** interface can,
+because it has no bit rate at all.
+
+Measured on `vcan0`: 100 messages of 4 KiB — 71 frames each, 7 100 frames in a
+burst — lost 31% of messages on the default buffer, and none at all on 8 MiB.
+Nothing reported an error in either case, which is what makes it worth naming.
+
+The kernel clamps the request to `net.core.rmem_max` without saying so, so the
+link reads the value back and warns when it fell short.
 
 ### Identifier value is bus priority
 
