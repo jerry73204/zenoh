@@ -57,6 +57,46 @@ The defaults are a starting point, not an allocation. Two peers that both accept
 
 Only 11-bit identifiers are supported. `id`, `match` and `mask` above `0x7FF` are refused at open.
 
+### Interoperating with zenoh-pico
+
+zenoh-pico has a CAN link of the same wire format, and the two talk to each other
+over one bus. One thing has to be arranged first.
+
+zenoh-pico's `Z_BATCH_MULTICAST_SIZE` is a **compile-time constant, default
+2048**, and it is advertised verbatim in the `Join` message no matter what the
+link underneath can actually carry. Its receiver then rejects any peer whose
+advertised batch size is not exactly equal to its own:
+
+```c
+/* zenoh-pico src/transport/multicast/rx.c */
+if ((msg->_seq_num_res != Z_SN_RESOLUTION) || (msg->_req_id_res != Z_REQ_RESOLUTION) ||
+    (msg->_batch_size != Z_BATCH_MULTICAST_SIZE)) {
+    _Z_INFO("Couldn't accept peer because distant node is incompatible config wise.");
+```
+
+This link advertises `min(configured batch size, link MTU)`, which on CAN FD is
+63. A stock zenoh-pico advertises 2048, so the two never associate — and the
+symptom is that single log line on the pico side and nothing at all on this one.
+
+Build zenoh-pico with its multicast batch set to the CAN MTU:
+
+```sh
+cmake -S <zenoh-pico> -B build -DZ_FEATURE_LINK_CAN=1 -DBATCH_MULTICAST_SIZE=63
+```
+
+Then, with `vcan0` up and the two peers on different identifiers:
+
+```sh
+# zenoh-pico subscriber
+build/examples/z_sub -m peer -k 'demo/example/**'     -l 'can/vcan0#bitrate=500000;dbitrate=2000000;id=0x200;match=0;mask=0'
+
+# zenoh-rs publisher
+cargo run -p zenoh-examples --features zenoh/transport_can --example z_pub --     -m peer -l 'can/vcan0#id=0x100' --no-multicast-scouting -k 'demo/example/from-rust'
+```
+
+Note the pico side must use `-l` (listen), never `-e` (connect): its CAN link
+registers in `_z_listen_link` only, because a bus has no connection setup.
+
 ### Testing without hardware
 
 The link runs against a virtual bus, which needs no CAN controller:
