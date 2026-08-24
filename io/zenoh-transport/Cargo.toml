@@ -40,6 +40,7 @@ shared-memory = [
 stats = ["zenoh-stats"]
 test = []
 transport_auth = []
+transport_can = ["zenoh-link/transport_can"]
 transport_compression = []
 transport_multilink = ["auth_pubkey"]
 transport_quic = ["zenoh-link/transport_quic"]
