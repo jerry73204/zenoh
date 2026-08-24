@@ -46,6 +46,7 @@ mod tests {
         time::Duration,
     };
 
+    use zenoh_buffers::buffer::SplitBuffer;
     use zenoh_core::ztimeout;
     use zenoh_link::Link;
     use zenoh_protocol::{
@@ -54,8 +55,9 @@ mod tests {
         },
         network::{
             push::{ext::QoSType, Push},
-            NetworkMessage, NetworkMessageMut,
+            NetworkBodyMut, NetworkMessage, NetworkMessageMut,
         },
+        zenoh::PushBody,
     };
     use zenoh_result::ZResult;
     use zenoh_transport::{
@@ -92,21 +94,31 @@ mod tests {
         false
     }
 
+    /// Counts what arrives and checks it byte for byte.
+    ///
+    /// Counting alone would not catch a reassembly bug: a message split across
+    /// 71 CAN frames and put back together wrongly still arrives.
     struct SHPeer {
         count: Arc<AtomicUsize>,
-    }
-
-    impl Default for SHPeer {
-        fn default() -> Self {
-            Self {
-                count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
+        corrupt: Arc<AtomicUsize>,
+        expected: Arc<Vec<u8>>,
     }
 
     impl SHPeer {
+        fn new(expected: Vec<u8>) -> Self {
+            Self {
+                count: Arc::new(AtomicUsize::new(0)),
+                corrupt: Arc::new(AtomicUsize::new(0)),
+                expected: Arc::new(expected),
+            }
+        }
+
         fn get_count(&self) -> usize {
             self.count.load(Ordering::Relaxed)
+        }
+
+        fn get_corrupt(&self) -> usize {
+            self.corrupt.load(Ordering::Relaxed)
         }
     }
 
@@ -123,25 +135,41 @@ mod tests {
             &self,
             _transport: TransportMulticast,
         ) -> ZResult<Arc<dyn TransportMulticastEventHandler>> {
-            Ok(Arc::new(SCPeer::new(self.count.clone())))
+            Ok(Arc::new(SCPeer::new(
+                self.count.clone(),
+                self.corrupt.clone(),
+                self.expected.clone(),
+            )))
         }
     }
 
     pub struct SCPeer {
         count: Arc<AtomicUsize>,
+        corrupt: Arc<AtomicUsize>,
+        expected: Arc<Vec<u8>>,
     }
 
     impl SCPeer {
-        pub fn new(count: Arc<AtomicUsize>) -> Self {
-            Self { count }
+        pub fn new(
+            count: Arc<AtomicUsize>,
+            corrupt: Arc<AtomicUsize>,
+            expected: Arc<Vec<u8>>,
+        ) -> Self {
+            Self {
+                count,
+                corrupt,
+                expected,
+            }
         }
     }
 
     impl TransportMulticastEventHandler for SCPeer {
         fn new_peer(&self, peer: TransportPeer) -> ZResult<Arc<dyn TransportPeerEventHandler>> {
-            println!("\tNew peer: {peer:?}");
+            println!("\tNew peer: {}", peer.zid);
             Ok(Arc::new(SCPeer {
                 count: self.count.clone(),
+                corrupt: self.corrupt.clone(),
+                expected: self.expected.clone(),
             }))
         }
         fn closed(&self) {}
@@ -152,7 +180,14 @@ mod tests {
     }
 
     impl TransportPeerEventHandler for SCPeer {
-        fn handle_message(&self, _msg: NetworkMessageMut) -> ZResult<()> {
+        fn handle_message(&self, msg: NetworkMessageMut) -> ZResult<()> {
+            if let NetworkBodyMut::Push(push) = msg.body {
+                if let PushBody::Put(put) = &push.payload {
+                    if put.payload.contiguous().as_ref() != self.expected.as_slice() {
+                        self.corrupt.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
             self.count.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -179,18 +214,19 @@ mod tests {
     async fn open_transport(
         endpoint01: &EndPoint,
         endpoint02: &EndPoint,
+        payload: &[u8],
     ) -> (TransportMulticastPeer, TransportMulticastPeer) {
         let peer01_id = ZenohIdProto::try_from([1]).unwrap();
         let peer02_id = ZenohIdProto::try_from([2]).unwrap();
 
-        let peer01_handler = Arc::new(SHPeer::default());
+        let peer01_handler = Arc::new(SHPeer::new(payload.to_vec()));
         let peer01_manager = TransportManager::builder()
             .zid(peer01_id)
             .whatami(WhatAmI::Peer)
             .build_test(peer01_handler.clone())
             .unwrap();
 
-        let peer02_handler = Arc::new(SHPeer::default());
+        let peer02_handler = Arc::new(SHPeer::new(payload.to_vec()));
         let peer02_manager = TransportManager::builder()
             .whatami(WhatAmI::Peer)
             .zid(peer02_id)
@@ -266,32 +302,72 @@ mod tests {
         tokio::time::sleep(SLEEP).await;
     }
 
+    /// A payload with structure, so a reassembly that puts the right number of
+    /// bytes back in the wrong order is caught. All-zeros would not be.
+    fn pattern(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
     async fn test_transport(
         peer01: &TransportMulticastPeer,
         peer02: &TransportMulticastPeer,
         channel: Channel,
-        msg_size: usize,
+        payload: &[u8],
     ) {
         let message = NetworkMessage::from(Push {
             wire_expr: "test".into(),
             ext_qos: QoSType::new(channel.priority, CongestionControl::Block, false),
-            ..Push::from(vec![0u8; msg_size])
+            ..Push::from(payload.to_vec())
         });
 
-        println!("Sending {MSG_COUNT} messages of {msg_size} bytes... {channel:?}");
+        println!(
+            "Sending {MSG_COUNT} messages of {} bytes... {channel:?}",
+            payload.len()
+        );
         for _ in 0..MSG_COUNT {
             peer01.transport.schedule(message.clone().as_mut()).unwrap();
         }
 
-        // The link is best-effort by nature — CAN is reliable per frame but not
-        // end to end — so the assertion is that traffic arrives, not that all of
-        // it does. This mirrors the UDP multicast test.
+        // Wait for delivery to settle rather than stopping at the first
+        // message. Sampling until the count holds still gives a figure that
+        // means something; stopping at `count != 0` reports how much happened
+        // to have arrived by then, which is not a measurement of anything.
         ztimeout!(async {
-            while peer02.handler.get_count() == 0 {
+            let mut last = usize::MAX;
+            let mut stable = 0;
+            loop {
+                let now = peer02.handler.get_count();
+                if now == MSG_COUNT {
+                    break;
+                }
+                if now == last {
+                    stable += 1;
+                    // A full second with no new message.
+                    if stable >= 100 {
+                        break;
+                    }
+                } else {
+                    stable = 0;
+                    last = now;
+                }
                 tokio::time::sleep(SLEEP_COUNT).await;
             }
         });
-        println!("\tPeer02 received {} messages", peer02.handler.get_count());
+
+        let received = peer02.handler.get_count();
+        let corrupt = peer02.handler.get_corrupt();
+        println!(
+            "\tPeer02 received {received}/{MSG_COUNT} messages of {} bytes, {corrupt} corrupt",
+            payload.len()
+        );
+
+        // The link is best-effort by nature — CAN is reliable per frame but not
+        // end to end — so the contract is that traffic arrives, not that all of
+        // it does. This mirrors the UDP multicast test.
+        assert!(received > 0, "nothing arrived at all");
+        // Whatever does arrive must be intact. A message reassembled from CAN
+        // frames is either right or it is a bug; there is no partial credit.
+        assert_eq!(corrupt, 0, "{corrupt} of {received} messages were corrupt");
 
         tokio::time::sleep(SLEEP).await;
     }
@@ -299,8 +375,9 @@ mod tests {
     async fn run(endpoints: (&EndPoint, &EndPoint), channel: &[Channel], msg_size: &[usize]) {
         for ch in channel.iter() {
             for ms in msg_size.iter() {
-                let (peer01, peer02) = open_transport(endpoints.0, endpoints.1).await;
-                test_transport(&peer01, &peer02, *ch, *ms).await;
+                let payload = pattern(*ms);
+                let (peer01, peer02) = open_transport(endpoints.0, endpoints.1, &payload).await;
+                test_transport(&peer01, &peer02, *ch, &payload).await;
                 close_transport(peer01, peer02).await;
             }
         }
@@ -343,8 +420,18 @@ mod tests {
             return;
         }
 
-        let e01: EndPoint = format!("can/{DEVICE}#id=0x110").parse().unwrap();
-        let e02: EndPoint = format!("can/{DEVICE}#id=0x111").parse().unwrap();
+        // 100 messages of 4 KiB is 7 100 frames, and a virtual bus delivers them
+        // as fast as memory allows — far faster than any real bus, where
+        // 2 Mbit/s of CAN FD is under 2 800 frames per second. Without a bigger
+        // receive buffer the kernel drops the overflow before the link sees it,
+        // and 31% of messages are lost with no error anywhere. This is the
+        // knob for that, and this test is its demonstration.
+        let e01: EndPoint = format!("can/{DEVICE}#id=0x110;so_rcvbuf=8388608")
+            .parse()
+            .unwrap();
+        let e02: EndPoint = format!("can/{DEVICE}#id=0x111;so_rcvbuf=8388608")
+            .parse()
+            .unwrap();
         run((&e01, &e02), &channels()[..1], &MSG_SIZE_LARGE).await;
     }
 
@@ -358,7 +445,7 @@ mod tests {
             return;
         }
 
-        let handler = Arc::new(SHPeer::default());
+        let handler = Arc::new(SHPeer::new(Vec::new()));
         let manager = TransportManager::builder()
             .zid(ZenohIdProto::try_from([3]).unwrap())
             .whatami(WhatAmI::Peer)
@@ -384,8 +471,19 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        // No interface of that name, and the error should say so.
-        let missing: EndPoint = "can/vcan-nonexistent".parse().unwrap();
+        // An over-long interface name is refused before open, with the limit
+        // named, rather than truncating into some other interface.
+        let long: EndPoint = "can/vcan-nonexistent".parse().unwrap();
+        let err = ztimeout!(manager.open_transport_multicast(long)).unwrap_err();
+        assert!(
+            err.to_string().contains("at most 15"),
+            "unexpected error: {err}"
+        );
+
+        // No interface of that name, and the error should say so. The name is
+        // kept under IFNAMSIZ so this exercises the missing-interface path
+        // rather than the name-length guard.
+        let missing: EndPoint = "can/vcan9nope".parse().unwrap();
         let err = ztimeout!(manager.open_transport_multicast(missing)).unwrap_err();
         assert!(
             err.to_string().contains("no such interface"),

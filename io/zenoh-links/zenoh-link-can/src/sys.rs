@@ -52,6 +52,59 @@ impl Drop for RawCan {
     }
 }
 
+/// Ask for a receive buffer of `requested` bytes and report what was granted.
+///
+/// The kernel clamps the request to `net.core.rmem_max` without telling anyone,
+/// and then reports back double what it stored, so the only honest thing to do
+/// is read the value back and say when it fell short.
+fn set_rcvbuf(raw: &RawCan, requested: u32, device: &str) -> ZResult<()> {
+    let value = requested as libc::c_int;
+    // SAFETY: `value` outlives the call and its length is its own size.
+    let rc = unsafe {
+        libc::setsockopt(
+            raw.fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &value as *const libc::c_int as *const libc::c_void,
+            mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc < 0 {
+        let e = io::Error::last_os_error();
+        bail!("CAN: setting the receive buffer on {device:?} to {requested} bytes failed: {e}");
+    }
+
+    let mut granted: libc::c_int = 0;
+    let mut len = mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `granted` and `len` are valid for the sizes given.
+    let rc = unsafe {
+        libc::getsockopt(
+            raw.fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &mut granted as *mut libc::c_int as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc < 0 {
+        // Not fatal: the buffer was set, we simply cannot report on it.
+        tracing::debug!("CAN: could not read back the receive buffer on {device:?}");
+        return Ok(());
+    }
+
+    // The kernel reports twice what it stored, the second half being its own
+    // bookkeeping allowance.
+    let effective = (granted as u32) / 2;
+    if effective < requested {
+        tracing::warn!(
+            "CAN: asked {device:?} for a {requested}-byte receive buffer but got {effective};              net.core.rmem_max is the ceiling. Raise it with              `sysctl -w net.core.rmem_max={requested}` if bursts are being dropped."
+        );
+    } else {
+        tracing::debug!("CAN: receive buffer on {device:?} is {effective} bytes");
+    }
+    Ok(())
+}
+
 pub(crate) struct CanSocket {
     io: AsyncFd<RawCan>,
     /// This peer's identifier — its address on the bus.
@@ -150,6 +203,17 @@ impl CanSocket {
                     ep.device
                 );
             }
+        }
+
+        // Frames that arrive faster than the link drains them are dropped by the
+        // kernel, silently, before the link ever sees them. A real bus cannot
+        // outrun the reader — 2 Mbit/s of CAN FD is under 2 800 frames per
+        // second — but a virtual interface has no bit rate at all, and a burst
+        // over `vcan` will overrun the default buffer. Measured: a 4 KiB
+        // payload, which is 71 frames, lost 31% of messages on the default
+        // buffer and none of them on 8 MiB.
+        if let Some(requested) = ep.so_rcvbuf {
+            set_rcvbuf(&raw, requested, &ep.device)?;
         }
 
         let mut addr: libc::sockaddr_can = unsafe { mem::zeroed() };

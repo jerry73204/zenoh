@@ -40,7 +40,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 pub use multicast::LinkManagerMulticastCan;
-use zenoh_link_commons::LocatorInspector;
+use zenoh_link_commons::{LocatorInspector, TCP_SO_RCV_BUF};
 use zenoh_protocol::{
     core::{EndPoint, Locator, Metadata, Reliability},
     transport::BatchSize,
@@ -98,6 +98,13 @@ pub mod config {
     pub const ID: &str = "id";
     pub const MATCH: &str = "match";
     pub const MASK: &str = "mask";
+    /// Receive buffer size in bytes, spelled as the TCP and UDP links spell it.
+    ///
+    /// Absent, the kernel default applies. Raising it matters only when frames
+    /// can arrive faster than the link drains them, which a real bus cannot do
+    /// — 2 Mbit/s of CAN FD is under 2 800 frames per second — but a virtual
+    /// interface can, because it has no bit rate at all. See the README.
+    pub use zenoh_link_commons::TCP_SO_RCV_BUF as SO_RCVBUF;
 }
 
 pub const DEFAULT_BITRATE: u32 = 500_000;
@@ -150,6 +157,8 @@ pub(crate) struct CanEndpoint {
     pub(crate) id: u32,
     pub(crate) filter_match: u32,
     pub(crate) filter_mask: u32,
+    /// `None` leaves the kernel default in place.
+    pub(crate) so_rcvbuf: Option<u32>,
 }
 
 /// Parse an unsigned integer, accepting decimal and `0x`-prefixed hex.
@@ -174,6 +183,10 @@ fn get_u32(endpoint: &EndPoint, key: &str, default: u32) -> ZResult<u32> {
         Some(v) => parse_u32(key, v),
         None => Ok(default),
     }
+}
+
+fn get_opt_u32(endpoint: &EndPoint, key: &str) -> ZResult<Option<u32>> {
+    endpoint.config().get(key).map(|v| parse_u32(key, v)).transpose()
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -209,6 +222,7 @@ impl CanEndpoint {
             id: get_u32(endpoint, config::ID, DEFAULT_ID)?,
             filter_match: get_u32(endpoint, config::MATCH, DEFAULT_MATCH)?,
             filter_mask: get_u32(endpoint, config::MASK, DEFAULT_MASK)?,
+            so_rcvbuf: get_opt_u32(endpoint, TCP_SO_RCV_BUF)?,
         };
         ep.validate()?;
         Ok(ep)
@@ -325,6 +339,18 @@ mod tests {
     fn decimal_and_hex_are_both_accepted() {
         let c = CanEndpoint::parse(&ep("can/vcan0#id=257")).unwrap();
         assert_eq!(c.id, 0x101);
+    }
+
+    #[test]
+    fn the_receive_buffer_defaults_to_the_kernels() {
+        assert_eq!(CanEndpoint::parse(&ep("can/vcan0")).unwrap().so_rcvbuf, None);
+        assert_eq!(
+            CanEndpoint::parse(&ep("can/vcan0#so_rcvbuf=8388608"))
+                .unwrap()
+                .so_rcvbuf,
+            Some(8 * 1024 * 1024)
+        );
+        assert!(CanEndpoint::parse(&ep("can/vcan0#so_rcvbuf=lots")).is_err());
     }
 
     #[test]
