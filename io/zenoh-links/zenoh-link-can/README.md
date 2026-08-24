@@ -47,6 +47,14 @@ Only 11-bit identifiers are supported. `id`, `match` and `mask` above `0x7FF` ar
 The link runs against a virtual bus, which needs no CAN controller:
 
 ```sh
+ci/vcan-setup.sh              # create and bring up vcan0, prompting for sudo
+ci/vcan-setup.sh --status     # report, changing nothing
+ci/vcan-setup.sh --down       # tear it down again
+```
+
+which is the equivalent of:
+
+```sh
 sudo modprobe vcan
 sudo ip link add dev vcan0 type vcan
 sudo ip link set up vcan0
