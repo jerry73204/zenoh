@@ -100,6 +100,7 @@ zenoh-util = { workspace = true }
 
 [dev-dependencies]
 zenoh-buffers = { workspace = true }
+zenoh-codec = { workspace = true }
 zenoh-protocol = { workspace = true, features = ["test"] }
 zenoh-test = { workspace = true }
 zenoh-util = { workspace = true }

@@ -61,8 +61,10 @@ mod tests {
     };
     use zenoh_result::ZResult;
     use zenoh_transport::{
-        multicast::TransportMulticast, unicast::TransportUnicast, TransportEventHandler,
-        TransportManager, TransportMulticastEventHandler, TransportPeer, TransportPeerEventHandler,
+        multicast::{TransportManagerBuilderMulticast, TransportMulticast},
+        unicast::TransportUnicast,
+        TransportEventHandler, TransportManager, TransportMulticastEventHandler, TransportPeer,
+        TransportPeerEventHandler,
     };
 
     const TIMEOUT: Duration = Duration::from_secs(60);
@@ -216,6 +218,19 @@ mod tests {
         endpoint02: &EndPoint,
         payload: &[u8],
     ) -> (TransportMulticastPeer, TransportMulticastPeer) {
+        open_transport_qos(endpoint01, endpoint02, payload, false).await
+    }
+
+    /// `qos` decides whether the transport keeps one transmission queue or one
+    /// per priority. It is off by default, and with it off every batch reports
+    /// priority index 0, so a link that maps priority onto the wire sees
+    /// nothing but `Control`.
+    async fn open_transport_qos(
+        endpoint01: &EndPoint,
+        endpoint02: &EndPoint,
+        payload: &[u8],
+        qos: bool,
+    ) -> (TransportMulticastPeer, TransportMulticastPeer) {
         let peer01_id = ZenohIdProto::try_from([1]).unwrap();
         let peer02_id = ZenohIdProto::try_from([2]).unwrap();
 
@@ -223,6 +238,7 @@ mod tests {
         let peer01_manager = TransportManager::builder()
             .zid(peer01_id)
             .whatami(WhatAmI::Peer)
+            .multicast(TransportManagerBuilderMulticast::default().qos(qos))
             .build_test(peer01_handler.clone())
             .unwrap();
 
@@ -230,6 +246,7 @@ mod tests {
         let peer02_manager = TransportManager::builder()
             .whatami(WhatAmI::Peer)
             .zid(peer02_id)
+            .multicast(TransportManagerBuilderMulticast::default().qos(qos))
             .build_test(peer02_handler.clone())
             .unwrap();
 
@@ -373,10 +390,20 @@ mod tests {
     }
 
     async fn run(endpoints: (&EndPoint, &EndPoint), channel: &[Channel], msg_size: &[usize]) {
+        run_qos(endpoints, channel, msg_size, false).await
+    }
+
+    async fn run_qos(
+        endpoints: (&EndPoint, &EndPoint),
+        channel: &[Channel],
+        msg_size: &[usize],
+        qos: bool,
+    ) {
         for ch in channel.iter() {
             for ms in msg_size.iter() {
                 let payload = pattern(*ms);
-                let (peer01, peer02) = open_transport(endpoints.0, endpoints.1, &payload).await;
+                let (peer01, peer02) =
+                    open_transport_qos(endpoints.0, endpoints.1, &payload, qos).await;
                 test_transport(&peer01, &peer02, *ch, &payload).await;
                 close_transport(peer01, peer02).await;
             }
@@ -433,6 +460,126 @@ mod tests {
             .parse()
             .unwrap();
         run((&e01, &e02), &channels()[..1], &MSG_SIZE_LARGE).await;
+    }
+
+    /// phase-378 W7: with `prio_bits` set, one peer transmits under several
+    /// identifiers — one per traffic class — and every one of them must still
+    /// resolve to that single peer. If it did not, the transport would see
+    /// eight peers where there is one, and a peer would hear its own frames.
+    ///
+    /// What this test cannot show is the point of the feature. `vcan` has no
+    /// arbitration: frames are queued, not contended for, so an urgent message
+    /// overtaking a bulk burst is not observable here at all. That needs a real
+    /// bus (phase-378 Tier 4). What is checked here is that the addressing
+    /// survives, which is the part that can be got wrong in software.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs a vcan0 interface; see the module docs"]
+    async fn transport_multicast_can_priority_major_ids() {
+        zenoh_util::init_log_from_env_or("error");
+        if !vcan_present() {
+            return;
+        }
+
+        // Three class bits leave eight for the peer, so the identifiers are
+        // 0x?0A and 0x?0B with the class in the top nibble.
+        let e01: EndPoint = format!("can/{DEVICE}#id=0x0A;prio_bits=3;so_rcvbuf=8388608")
+            .parse()
+            .unwrap();
+        let e02: EndPoint = format!("can/{DEVICE}#id=0x0B;prio_bits=3;so_rcvbuf=8388608")
+            .parse()
+            .unwrap();
+
+        // Both a high and a low priority, so more than one class is actually
+        // put on the wire and both have to arrive.
+        let channel = [
+            Channel {
+                priority: Priority::RealTime,
+                reliability: Reliability::BestEffort,
+            },
+            Channel {
+                priority: Priority::Background,
+                reliability: Reliability::BestEffort,
+            },
+        ];
+        // NOTE: QoS stays OFF here, so the identifiers do not in fact leave
+        // class 0 — see `join_with_qos_does_not_fit_one_can_frame` below for
+        // why turning it on cannot work on CAN FD. What this test does prove is
+        // that the priority-major layout has not broken addressing: peers still
+        // find each other and every message arrives intact when the identifier
+        // is split into a class field and a peer field.
+        run_qos((&e01, &e02), &channel, &MSG_SIZE_FRAGMENTED, false).await;
+    }
+
+    /// phase-378 W7, the blocker: **a `Join` carrying per-priority sequence
+    /// numbers does not fit one CAN FD frame**, so the traffic-class field can
+    /// never be exercised on this medium as the protocol stands.
+    ///
+    /// Mapping zenoh priority onto the identifier only does anything when the
+    /// multicast transport keeps one queue per priority, because otherwise
+    /// every batch reports priority index 0. Turning that on makes `Join` carry
+    /// eight `PrioritySn` instead of one — and `Join` is written as a single
+    /// datagram with no fragmentation, so on a 63-byte link the transmit task
+    /// dies before the session starts.
+    ///
+    /// This test needs no bus. It measures both encodings so the margin is a
+    /// number, and it will fail loudly if the `Join` ever shrinks enough to fit
+    /// — which is the day this feature becomes usable.
+    #[test]
+    fn join_with_qos_does_not_fit_one_can_frame() {
+        use zenoh_buffers::writer::HasWriter;
+        use zenoh_codec::{WCodec, Zenoh080};
+        use zenoh_protocol::{
+            core::{Resolution, WhatAmI, ZenohIdProto},
+            transport::{join::ext::PatchType, Join, PrioritySn, TransportMessage},
+        };
+
+        const CAN_FD_MTU: usize = 63;
+
+        fn encoded_len(ext_qos: Option<Box<[PrioritySn; Priority::NUM]>>) -> usize {
+            // Sequence numbers near the top of the resolution, which is what a
+            // randomly seeded session actually starts with, so the varints are
+            // their realistic width rather than one byte.
+            let sn = PrioritySn {
+                reliable: 0x0FFF_FFFF,
+                best_effort: 0x0FFF_FFFF,
+            };
+            let msg: TransportMessage = Join {
+                version: 0x09,
+                whatami: WhatAmI::Peer,
+                zid: ZenohIdProto::rand(),
+                resolution: Resolution::default(),
+                batch_size: CAN_FD_MTU as u16,
+                lease: Duration::from_secs(60),
+                next_sn: sn,
+                ext_qos,
+                ext_shm: None,
+                ext_patch: PatchType::CURRENT,
+            }
+            .into();
+
+            let mut buf = Vec::new();
+            let codec = Zenoh080::new();
+            codec.write(&mut buf.writer(), &msg).unwrap();
+            buf.len()
+        }
+
+        let without = encoded_len(None);
+        let with = encoded_len(Some(Box::new([PrioritySn {
+            reliable: 0x0FFF_FFFF,
+            best_effort: 0x0FFF_FFFF,
+        }; Priority::NUM])));
+
+        println!("Join without QoS: {without} bytes; with QoS: {with} bytes; CAN FD MTU {CAN_FD_MTU}");
+
+        assert!(
+            without <= CAN_FD_MTU,
+            "a plain Join must fit, or the link could never work at all: {without} > {CAN_FD_MTU}"
+        );
+        assert!(
+            with > CAN_FD_MTU,
+            "Join with per-priority SNs now fits ({with} <= {CAN_FD_MTU}); \
+             W7 may be unblocked — re-test with multicast QoS enabled"
+        );
     }
 
     /// phase-378 W2: the link reports the MTU of the mode it actually obtained,

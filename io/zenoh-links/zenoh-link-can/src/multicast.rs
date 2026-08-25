@@ -54,7 +54,7 @@ mod imp {
     use async_trait::async_trait;
     use zenoh_link_commons::{LinkAuthId, LinkMulticastTrait};
     use zenoh_protocol::{
-        core::Locator,
+        core::{Locator, Priority},
         transport::BatchSize,
     };
     use zenoh_result::ZResult;
@@ -121,7 +121,7 @@ mod imp {
         }
 
         async fn write(&self, buffer: &[u8]) -> ZResult<usize> {
-            self.socket.send(buffer).await
+            self.socket.send(buffer, Priority::DEFAULT as u8).await
         }
 
         /// A datagram link writes one frame or fails; there is no partial write
@@ -129,7 +129,19 @@ mod imp {
         /// MTU, because the transmission pipeline clamps to it and fragments
         /// above it.
         async fn write_all(&self, buffer: &[u8]) -> ZResult<()> {
-            self.socket.send(buffer).await.map(|_| ())
+            self.socket.send(buffer, Priority::DEFAULT as u8).await.map(|_| ())
+        }
+
+        /// A CAN identifier **is** the bus priority, so this is the one link
+        /// where the batch's priority belongs on the wire. With `prio_bits=0`,
+        /// the default, it changes nothing and the frames stay exactly what
+        /// zenoh-pico speaks.
+        async fn write_all_with_priority(
+            &self,
+            buffer: &[u8],
+            priority: Priority,
+        ) -> ZResult<()> {
+            self.socket.send(buffer, priority as u8).await.map(|_| ())
         }
 
         async fn read<'a>(&'a self, buffer: &mut [u8]) -> ZResult<(usize, Cow<'a, Locator>)> {
