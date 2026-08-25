@@ -9,7 +9,9 @@ It is highly recommended to depend solely on the zenoh and zenoh-ext crates and 
 
 ## The CAN link
 
-A CAN and CAN FD transport, behind the `transport_can` feature. Linux only: it is built on SocketCAN.
+A CAN FD transport, behind the `transport_can` feature. Linux only: it is built on SocketCAN.
+
+**CAN FD is required, not preferred.** Classic CAN leaves a 7-byte MTU, and zenoh's per-fragment overhead is around 16 bytes, so a classic link cannot make progress at all — it is not a slower link, it is a non-functional one. An interface that does not negotiate FD is refused at open, and `dbitrate=0` is refused at parse.
 
 A CAN bus is a broadcast medium — every node hears every frame and filters by identifier — so this is a **multicast** link. Each peer owns one identifier, transmits on it, accepts frames from every other identifier the mask admits, and drops its own. The sender's identifier is that peer's address.
 
@@ -24,16 +26,16 @@ can/<device>#bitrate=500000;dbitrate=2000000;id=0x100;match=0;mask=0
 | key | meaning |
 | --- | --- |
 | `device` | the CAN interface name, such as `can0` or `vcan0` |
-| `bitrate` | arbitration-phase bit rate, and the sole rate for classic CAN |
-| `dbitrate` | CAN FD data-phase bit rate. `0` selects classic CAN |
+| `bitrate` | arbitration-phase bit rate |
+| `dbitrate` | CAN FD data-phase bit rate. Must be non-zero |
 | `id` | **this** peer's identifier, and its address on the bus |
 | `match` | accept frames whose `(id & mask) == match` |
 | `mask` | `0`, the default, accepts every identifier on the bus |
 | `so_rcvbuf` | receive buffer in bytes. Absent, the kernel default applies |
 
-On Linux the bit rates are advisory: rates are set out of band with `ip link set can0 type can bitrate ...`, and a virtual interface has none at all. `dbitrate` is still load-bearing, because `0` selects classic framing.
+On Linux the bit rates are advisory: rates are set out of band with `ip link set can0 type can bitrate ...`, and a virtual interface has none at all. They are still validated, because `dbitrate=0` used to select classic CAN and now means a misconfiguration.
 
-The MTU is 63 bytes with CAN FD and 7 with classic CAN — one frame, less a one-byte length prefix. The link reports the mode it actually obtained rather than the one requested.
+The MTU is 63 bytes: one CAN FD frame, less a one-byte length prefix.
 
 ### `so_rcvbuf`, and when it matters
 

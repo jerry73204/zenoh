@@ -582,6 +582,114 @@ mod tests {
         );
     }
 
+    /// Four peers on one bus, which is the first test that is not a pair.
+    ///
+    /// It exercises the thing a pair cannot: each peer has to track three
+    /// distinct remotes, told apart only by the identifier in the frames they
+    /// send. A bug in the peer-address derivation is invisible with two peers
+    /// and obvious with four.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs a vcan0 interface; see the module docs"]
+    async fn transport_multicast_can_four_peers() {
+        zenoh_util::init_log_from_env_or("error");
+        if !vcan_present() {
+            return;
+        }
+
+        const PEERS: usize = 4;
+        let payload = pattern(189);
+
+        let mut managers = Vec::new();
+        let mut handlers = Vec::new();
+        for i in 0..PEERS {
+            let handler = Arc::new(SHPeer::new(payload.clone()));
+            let manager = TransportManager::builder()
+                .zid(ZenohIdProto::try_from([(i + 1) as u8]).unwrap())
+                .whatami(WhatAmI::Peer)
+                .build_test(handler.clone())
+                .unwrap();
+            let ep: EndPoint = format!("can/{DEVICE}#id=0x{:x};so_rcvbuf=8388608", 0x140 + i)
+                .parse()
+                .unwrap();
+            ztimeout!(manager.open_transport_multicast(ep)).unwrap();
+            managers.push(manager);
+            handlers.push(handler);
+        }
+
+        // Every peer must see the other three, by identifier alone.
+        // Convergence takes one `join_interval` (2.5 s by default), not the
+        // instant a peer opens: a peer only learns about those that were
+        // already there when the next periodic Join comes round. Immediately
+        // after opening, the counts are a staircase by open order.
+        ztimeout!(async {
+            loop {
+                let mut counts = Vec::new();
+                for manager in managers.iter() {
+                    let ts = manager.get_transports_multicast().await;
+                    counts.push(ts.first().map(|t| t.get_peers().unwrap().len()).unwrap_or(0));
+                }
+                if counts.iter().all(|c| *c == PEERS - 1) {
+                    println!("\tevery peer sees the other {}", PEERS - 1);
+                    break;
+                }
+                tokio::time::sleep(SLEEP_COUNT).await;
+            }
+        });
+
+        // Exactly the others, never itself and never a duplicate. A stray peer
+        // left on the bus by an earlier run shows up here as an extra, which is
+        // worth failing on rather than tolerating.
+        for (i, manager) in managers.iter().enumerate() {
+            let ts = ztimeout!(manager.get_transports_multicast());
+            let peers = ts.first().unwrap().get_peers().unwrap();
+            assert_eq!(
+                peers.len(),
+                PEERS - 1,
+                "peer {i} sees {} remotes, expected {}; is something else on the bus?",
+                peers.len(),
+                PEERS - 1
+            );
+        }
+
+        // One publisher, three subscribers.
+        let message = NetworkMessage::from(Push {
+            wire_expr: "test".into(),
+            ext_qos: QoSType::new(Priority::DEFAULT, CongestionControl::Block, false),
+            ..Push::from(payload.clone())
+        });
+        let publisher = ztimeout!(managers[0].get_transports_multicast())
+            .first()
+            .unwrap()
+            .clone();
+        for _ in 0..MSG_COUNT {
+            publisher.schedule(message.clone().as_mut()).unwrap();
+        }
+
+        for (i, handler) in handlers.iter().enumerate().skip(1) {
+            ztimeout!(async {
+                while handler.get_count() < MSG_COUNT {
+                    tokio::time::sleep(SLEEP_COUNT).await;
+                }
+            });
+            println!(
+                "\tPeer {i} received {}/{MSG_COUNT}, {} corrupt",
+                handler.get_count(),
+                handler.get_corrupt()
+            );
+            assert_eq!(handler.get_corrupt(), 0);
+        }
+
+        // The publisher must not have heard itself.
+        assert_eq!(handlers[0].get_count(), 0, "a peer heard its own frames");
+
+        for manager in managers {
+            for t in ztimeout!(manager.get_transports_multicast()) {
+                ztimeout!(t.close()).unwrap();
+            }
+        }
+        tokio::time::sleep(SLEEP).await;
+    }
+
     /// phase-378 W2: the link reports the MTU of the mode it actually obtained,
     /// and a band that excludes a peer's own identifier is refused at open.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
