@@ -30,7 +30,7 @@ use zenoh_protocol::transport::BatchSize;
 use zenoh_result::{bail, zerror, ZResult};
 
 use crate::{
-    frame::{self, Frame, RxDrop},
+    frame::{self, Frame, RxDrop, RxFilter},
     CanEndpoint,
 };
 
@@ -107,10 +107,14 @@ fn set_rcvbuf(raw: &RawCan, requested: u32, device: &str) -> ZResult<()> {
 
 pub(crate) struct CanSocket {
     io: AsyncFd<RawCan>,
-    /// This peer's identifier — its address on the bus.
-    id: u32,
-    filter_match: u32,
-    filter_mask: u32,
+    /// This peer's identifier — its address on the bus. With priority bits in
+    /// play this is the peer field only, and the identifier actually
+    /// transmitted also carries the traffic class.
+    peer: u32,
+    /// Width of the traffic-class field, 0 when priority is not mapped onto
+    /// the identifier.
+    prio_bits: u8,
+    filter: RxFilter,
     /// The mode the interface actually came up in, which is not necessarily the
     /// mode the endpoint asked for.
     fd_mode: bool,
@@ -253,9 +257,14 @@ impl CanSocket {
 
         Ok(CanSocket {
             io,
-            id: ep.id,
-            filter_match: ep.filter_match,
-            filter_mask: ep.filter_mask,
+            peer: ep.id,
+            prio_bits: ep.prio_bits,
+            filter: RxFilter {
+                own: ep.id,
+                match_: ep.filter_match,
+                mask: ep.filter_mask,
+                prio_bits: ep.prio_bits,
+            },
             fd_mode,
             mtu,
         })
@@ -263,10 +272,15 @@ impl CanSocket {
 
     /// Write one datagram, which must fit one frame.
     ///
+    /// `priority` is zenoh's own numbering, `Control` at 0 through `Background`
+    /// at 7. It selects the traffic class in the identifier when the endpoint
+    /// asked for priority bits, and is ignored otherwise.
+    ///
     /// Returns the number of datagram bytes accepted. There is no partial write
     /// to loop over: a datagram link writes one frame or it does not.
-    pub(crate) async fn send(&self, datagram: &[u8]) -> ZResult<usize> {
-        let (f, wire) = frame::encode(self.id, datagram, self.fd_mode)
+    pub(crate) async fn send(&self, datagram: &[u8], priority: u8) -> ZResult<usize> {
+        let id = frame::tx_id(self.peer, self.prio_bits, priority);
+        let (f, wire) = frame::encode(id, datagram, self.fd_mode)
             .map_err(|e| zerror!("CAN: {e}"))?;
         let bytes = f.as_wire_bytes(wire);
 
@@ -361,7 +375,7 @@ impl CanSocket {
                 bail!("CAN: the socket reported end of file");
             }
 
-            match frame::decode(&f, nread, self.id, self.filter_match, self.filter_mask, out) {
+            match frame::decode(&f, nread, &self.filter, out) {
                 Ok(delivered) => return Ok(delivered),
                 // Expected on any shared bus, and on a loopback-enabled
                 // interface every transmission comes back to us.

@@ -98,6 +98,14 @@ pub mod config {
     pub const ID: &str = "id";
     pub const MATCH: &str = "match";
     pub const MASK: &str = "mask";
+    /// Width of the traffic-class field in the identifier, 0..=3.
+    ///
+    /// `0`, the default, is the wire zenoh-pico speaks: the identifier is the
+    /// peer and nothing else. Above 0 the top `prio_bits` bits carry zenoh's
+    /// message priority so that an urgent message wins bus arbitration against
+    /// a bulk one — including one from the same peer. Both ends of a bus must
+    /// agree on this, and it costs peer address space.
+    pub const PRIO_BITS: &str = "prio_bits";
     /// Receive buffer size in bytes, spelled as the TCP and UDP links spell it.
     ///
     /// Absent, the kernel default applies. Raising it matters only when frames
@@ -112,6 +120,8 @@ pub const DEFAULT_DBITRATE: u32 = 2_000_000;
 pub const DEFAULT_ID: u32 = 0x100;
 pub const DEFAULT_MATCH: u32 = 0;
 pub const DEFAULT_MASK: u32 = 0;
+/// Off. The identifier is the peer, which is what zenoh-pico expects.
+pub const DEFAULT_PRIO_BITS: u8 = 0;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CanLocatorInspector;
@@ -159,6 +169,8 @@ pub(crate) struct CanEndpoint {
     pub(crate) filter_mask: u32,
     /// `None` leaves the kernel default in place.
     pub(crate) so_rcvbuf: Option<u32>,
+    /// Width of the traffic-class field. 0 disables priority mapping.
+    pub(crate) prio_bits: u8,
 }
 
 /// Parse an unsigned integer, accepting decimal and `0x`-prefixed hex.
@@ -223,25 +235,45 @@ impl CanEndpoint {
             filter_match: get_u32(endpoint, config::MATCH, DEFAULT_MATCH)?,
             filter_mask: get_u32(endpoint, config::MASK, DEFAULT_MASK)?,
             so_rcvbuf: get_opt_u32(endpoint, TCP_SO_RCV_BUF)?,
+            prio_bits: get_u32(endpoint, config::PRIO_BITS, DEFAULT_PRIO_BITS as u32)? as u8,
         };
         ep.validate()?;
         Ok(ep)
     }
 
     fn validate(&self) -> ZResult<()> {
+        if self.prio_bits > frame::PRIO_BITS_MAX {
+            bail!(
+                "CAN `{}` is {}, but zenoh has 8 priorities so at most {} bits are useful",
+                config::PRIO_BITS,
+                self.prio_bits,
+                frame::PRIO_BITS_MAX
+            );
+        }
+
         // Only 11-bit identifiers are expressible: the sender never sets
         // CAN_EFF_FLAG, so a larger value would silently become a different
-        // identifier on the wire. See RFC-0081 §2.1.
+        // identifier on the wire. See RFC-0081 §2.1. Traffic-class bits come
+        // out of that same 11, so they shrink the peer space.
+        let max_peer = frame::max_peer_id(self.prio_bits);
         for (key, value) in [
             (config::ID, self.id),
             (config::MATCH, self.filter_match),
             (config::MASK, self.filter_mask),
         ] {
-            if value > frame::CAN_SFF_MASK {
+            if value > max_peer {
+                if self.prio_bits == 0 {
+                    bail!(
+                        "CAN `{key}` is {value:#x}, above the 11-bit maximum {max_peer:#x}; \
+                         extended identifiers are not part of this wire format"
+                    );
+                }
                 bail!(
-                    "CAN `{key}` is {value:#x}, above the 11-bit maximum {:#x}; \
-                     extended identifiers are not part of this wire format",
-                    frame::CAN_SFF_MASK
+                    "CAN `{key}` is {value:#x}, but `{}={}` reserves the top {} bits of the \
+                     identifier for the traffic class, leaving {max_peer:#x} for the peer",
+                    config::PRIO_BITS,
+                    self.prio_bits,
+                    self.prio_bits
                 );
             }
         }
@@ -339,6 +371,37 @@ mod tests {
     fn decimal_and_hex_are_both_accepted() {
         let c = CanEndpoint::parse(&ep("can/vcan0#id=257")).unwrap();
         assert_eq!(c.id, 0x101);
+    }
+
+    #[test]
+    fn priority_bits_default_to_off() {
+        assert_eq!(
+            CanEndpoint::parse(&ep("can/vcan0")).unwrap().prio_bits,
+            DEFAULT_PRIO_BITS
+        );
+        assert_eq!(
+            CanEndpoint::parse(&ep("can/vcan0#id=0x0A;prio_bits=3"))
+                .unwrap()
+                .prio_bits,
+            3
+        );
+    }
+
+    #[test]
+    fn too_many_priority_bits_are_refused() {
+        let e = CanEndpoint::parse(&ep("can/vcan0#id=0x0A;prio_bits=4")).unwrap_err();
+        assert!(e.to_string().contains("at most 3 bits"), "{e}");
+    }
+
+    /// The class field eats peer space, and an id that no longer fits has to
+    /// say so rather than silently colliding with another class.
+    #[test]
+    fn an_id_that_no_longer_fits_is_refused_with_the_budget() {
+        let e = CanEndpoint::parse(&ep("can/vcan0#id=0x101;prio_bits=3")).unwrap_err();
+        assert!(e.to_string().contains("reserves the top 3 bits"), "{e}");
+        assert!(e.to_string().contains("0xff"), "{e}");
+        // The same id is fine with two class bits, which leave 9 for the peer.
+        assert!(CanEndpoint::parse(&ep("can/vcan0#id=0x101;prio_bits=2")).is_ok());
     }
 
     #[test]

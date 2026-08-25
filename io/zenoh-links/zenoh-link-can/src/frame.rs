@@ -56,6 +56,60 @@ pub(crate) const CAN_EFF_MASK: u32 = 0x1FFF_FFFF;
 /// The representable CAN FD frame lengths above 8.
 const FD_DLC_STEPS: [u8; 7] = [12, 16, 20, 24, 32, 48, 64];
 
+/// Identifiers are 11 bits, so this is the whole address space to divide up.
+pub(crate) const ID_BITS: u8 = 11;
+
+/// zenoh has 8 priorities, so a fully priority-major layout costs 3 bits.
+pub(crate) const PRIO_BITS_MAX: u8 = 3;
+
+/// The mask that recovers a peer's identity from a frame identifier.
+///
+/// With no priority bits the identifier *is* the peer, and the mask matches
+/// what zenoh-pico applies, so the two implementations agree. With `n` priority
+/// bits the top `n` bits are the traffic class and only the rest identify the
+/// peer — otherwise one peer would look like `2^n` different peers, one per
+/// priority it happens to transmit at.
+pub(crate) const fn peer_mask(prio_bits: u8) -> u32 {
+    if prio_bits == 0 {
+        CAN_EFF_MASK
+    } else {
+        (1u32 << (ID_BITS - prio_bits)) - 1
+    }
+}
+
+/// The largest peer identifier expressible alongside `prio_bits` class bits.
+pub(crate) const fn max_peer_id(prio_bits: u8) -> u32 {
+    (1u32 << (ID_BITS - prio_bits)) - 1
+}
+
+/// The identifier `peer` transmits on for a batch of the given zenoh priority.
+///
+/// The class occupies the **most significant** bits, so it dominates
+/// arbitration: a lower identifier wins the bus, and zenoh numbers its
+/// priorities with `Control` at 0 and `Background` at 7, so the two orderings
+/// already agree and nothing has to be inverted.
+///
+/// With fewer than 3 class bits the 8 priorities are folded onto `2^n` classes
+/// by dropping the low bits, which keeps the ordering and merges neighbours.
+pub(crate) fn tx_id(peer: u32, prio_bits: u8, priority: u8) -> u32 {
+    if prio_bits == 0 {
+        return peer;
+    }
+    let class = (priority >> (PRIO_BITS_MAX - prio_bits)) as u32;
+    (class << (ID_BITS - prio_bits)) | peer
+}
+
+/// How the receiver decides which frames are its own, which are in band, and
+/// which peer sent one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RxFilter {
+    /// This peer's identifier, in the peer field.
+    pub(crate) own: u32,
+    pub(crate) match_: u32,
+    pub(crate) mask: u32,
+    pub(crate) prio_bits: u8,
+}
+
 /// `struct canfd_frame` from `<linux/can.h>`.
 ///
 /// Declared here rather than taken from `libc` because `libc`'s version keeps
@@ -246,20 +300,21 @@ pub(crate) fn encode(
 pub(crate) fn decode(
     frame: &Frame,
     nread: usize,
-    own_id: u32,
-    filter_match: u32,
-    filter_mask: u32,
+    filter: &RxFilter,
     out: &mut [u8],
 ) -> Result<(usize, u32), RxDrop> {
     if nread != CANFD_MTU_WIRE && nread != CAN_MTU_WIRE {
         return Err(RxDrop::NotAFrame { nread });
     }
 
-    let sender = frame.can_id & CAN_EFF_MASK;
-    if sender == own_id {
+    // The peer field, not the whole identifier: with priority bits in play the
+    // same peer transmits under several identifiers and they must all resolve
+    // to one address.
+    let sender = frame.can_id & peer_mask(filter.prio_bits);
+    if sender == filter.own {
         return Err(RxDrop::OwnFrame);
     }
-    if filter_mask != 0 && (sender & filter_mask) != filter_match {
+    if filter.mask != 0 && (sender & filter.mask) != filter.match_ {
         return Err(RxDrop::Filtered { sender });
     }
 
@@ -285,6 +340,17 @@ pub(crate) fn decode(
 
     out[..declared].copy_from_slice(&frame.data[LEN_PREFIX..LEN_PREFIX + declared]);
     Ok((declared, sender))
+}
+
+/// A receive filter with no priority bits, which is the wire zenoh-pico speaks.
+#[cfg(test)]
+fn f(own: u32, match_: u32, mask: u32) -> RxFilter {
+    RxFilter {
+        own,
+        match_,
+        mask,
+        prio_bits: 0,
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -396,7 +462,7 @@ mod tests {
             let sent = datagram(len);
             let (frame, wire) = encode(0x101, &sent, true).unwrap();
             let mut out = [0u8; FD_MAX_DLEN];
-            let (n, sender) = decode(&frame, wire, 0x100, 0, 0, &mut out).unwrap();
+            let (n, sender) = decode(&frame, wire, &f(0x100, 0, 0), &mut out).unwrap();
             assert_eq!(n, len);
             assert_eq!(sender, 0x101);
             assert_eq!(&out[..n], &sent[..]);
@@ -409,7 +475,7 @@ mod tests {
             let sent = datagram(len);
             let (frame, wire) = encode(0x101, &sent, false).unwrap();
             let mut out = [0u8; FD_MAX_DLEN];
-            let (n, _sender) = decode(&frame, wire, 0x100, 0, 0, &mut out).unwrap();
+            let (n, _sender) = decode(&frame, wire, &f(0x100, 0, 0), &mut out).unwrap();
             assert_eq!((n, &out[..n]), (len, &sent[..]));
         }
     }
@@ -427,7 +493,7 @@ mod tests {
         let (frame, wire) = encode(0x100, &datagram(4), true).unwrap();
         let mut out = [0u8; FD_MAX_DLEN];
         assert_eq!(
-            decode(&frame, wire, 0x100, 0, 0, &mut out),
+            decode(&frame, wire, &f(0x100, 0, 0), &mut out),
             Err(RxDrop::OwnFrame)
         );
     }
@@ -436,7 +502,7 @@ mod tests {
     fn a_zero_mask_accepts_every_identifier() {
         let (frame, wire) = encode(0x7FF, &datagram(4), true).unwrap();
         let mut out = [0u8; FD_MAX_DLEN];
-        assert!(decode(&frame, wire, 0x100, 0, 0, &mut out).is_ok());
+        assert!(decode(&frame, wire, &f(0x100, 0, 0), &mut out).is_ok());
     }
 
     #[test]
@@ -444,11 +510,11 @@ mod tests {
         let mut out = [0u8; FD_MAX_DLEN];
         // Band 0x100..=0x1FF.
         let (inside, wire) = encode(0x1AB, &datagram(4), true).unwrap();
-        assert!(decode(&inside, wire, 0x100, 0x100, 0x700, &mut out).is_ok());
+        assert!(decode(&inside, wire, &f(0x100, 0x100, 0x700), &mut out).is_ok());
 
         let (outside, wire) = encode(0x2AB, &datagram(4), true).unwrap();
         assert_eq!(
-            decode(&outside, wire, 0x100, 0x100, 0x700, &mut out),
+            decode(&outside, wire, &f(0x100, 0x100, 0x700), &mut out),
             Err(RxDrop::Filtered { sender: 0x2AB })
         );
     }
@@ -459,7 +525,7 @@ mod tests {
         let mut out = [0u8; FD_MAX_DLEN];
         for nread in [0usize, 1, 15, 17, 71, 73] {
             assert_eq!(
-                decode(&frame, nread, 0x100, 0, 0, &mut out),
+                decode(&frame, nread, &f(0x100, 0, 0), &mut out),
                 Err(RxDrop::NotAFrame { nread })
             );
         }
@@ -472,7 +538,7 @@ mod tests {
         frame.len = 0;
         let mut out = [0u8; FD_MAX_DLEN];
         assert_eq!(
-            decode(&frame, CANFD_MTU_WIRE, 0x100, 0, 0, &mut out),
+            decode(&frame, CANFD_MTU_WIRE, &f(0x100, 0, 0), &mut out),
             Err(RxDrop::NoLengthByte)
         );
     }
@@ -483,7 +549,7 @@ mod tests {
         frame.data[0] = 63; // frame.len is 5, so only 4 bytes are present
         let mut out = [0u8; FD_MAX_DLEN];
         assert_eq!(
-            decode(&frame, wire, 0x100, 0, 0, &mut out),
+            decode(&frame, wire, &f(0x100, 0, 0), &mut out),
             Err(RxDrop::BadLength {
                 declared: 63,
                 available: 4
@@ -496,7 +562,7 @@ mod tests {
         let (frame, wire) = encode(0x101, &datagram(20), true).unwrap();
         let mut out = [0u8; 8];
         assert_eq!(
-            decode(&frame, wire, 0x100, 0, 0, &mut out),
+            decode(&frame, wire, &f(0x100, 0, 0), &mut out),
             Err(RxDrop::BufferTooSmall {
                 needed: 20,
                 have: 8
@@ -672,7 +738,7 @@ mod golden {
         let (frame, wire) = encode(0x101, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], true).unwrap();
         assert_eq!(frame.len, 16);
         let mut out = [0u8; FD_MAX_DLEN];
-        let (n, sender) = decode(&frame, wire, 0x100, 0, 0, &mut out).unwrap();
+        let (n, sender) = decode(&frame, wire, &f(0x100, 0, 0), &mut out).unwrap();
         assert_eq!((n, sender), (12, 0x101));
         assert_eq!(&out[..n], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     }
@@ -683,6 +749,160 @@ mod golden {
     fn a_zero_mask_ignores_match_entirely() {
         let (frame, wire) = encode(0x7FF, &[1], true).unwrap();
         let mut out = [0u8; FD_MAX_DLEN];
-        assert!(decode(&frame, wire, 0x100, 0x555, 0, &mut out).is_ok());
+        assert!(decode(&frame, wire, &f(0x100, 0x555, 0), &mut out).is_ok());
+    }
+}
+
+/// The priority-major identifier layout (RFC-0081 §3.3, phase-378 W7).
+///
+/// A CAN identifier *is* the bus priority, so mapping zenoh's QoS onto the top
+/// bits of the identifier is what lets an urgent message win arbitration
+/// against a bulk burst — including one from the same peer, which is the case
+/// zenoh-pico structurally cannot reach.
+#[cfg(test)]
+mod priority {
+    use super::*;
+
+    /// Zenoh's own numbering, lowest value highest priority.
+    const CONTROL: u8 = 0;
+    const REAL_TIME: u8 = 1;
+    const DATA: u8 = 5;
+    const BACKGROUND: u8 = 7;
+
+    /// The default. The wire must be exactly what zenoh-pico speaks, so the
+    /// identifier is the peer and the priority changes nothing at all.
+    #[test]
+    fn no_priority_bits_leaves_the_identifier_alone() {
+        for prio in 0..=7u8 {
+            assert_eq!(tx_id(0x101, 0, prio), 0x101);
+        }
+        assert_eq!(peer_mask(0), CAN_EFF_MASK);
+    }
+
+    /// Class in the top three bits, peer in the low eight.
+    #[test]
+    fn three_bits_put_the_class_above_the_peer() {
+        assert_eq!(tx_id(0x0A, 3, CONTROL), 0x00A);
+        assert_eq!(tx_id(0x0A, 3, REAL_TIME), 0x10A);
+        assert_eq!(tx_id(0x0A, 3, DATA), 0x50A);
+        assert_eq!(tx_id(0x0A, 3, BACKGROUND), 0x70A);
+    }
+
+    /// The property that makes this worth doing: a more urgent message from
+    /// **any** peer outranks a less urgent one from **any** peer, because the
+    /// class dominates from the most significant bit and a lower identifier
+    /// wins arbitration.
+    #[test]
+    fn class_dominates_peer_in_arbitration() {
+        // The lowest-numbered peer at Background still loses to the
+        // highest-numbered peer at Control.
+        assert!(tx_id(0xFF, 3, CONTROL) < tx_id(0x00, 3, BACKGROUND));
+        // And within a class, the lower peer wins, as before.
+        assert!(tx_id(0x01, 3, DATA) < tx_id(0x02, 3, DATA));
+    }
+
+    /// Zenoh numbers priorities with Control at 0 and Background at 7, and CAN
+    /// gives the bus to the lowest identifier, so the two orderings already
+    /// agree. Nothing is inverted anywhere, and this pins that.
+    #[test]
+    fn zenoh_priority_order_matches_arbitration_order() {
+        let ids: Vec<u32> = (0..=7u8).map(|p| tx_id(0x10, 3, p)).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted, "more urgent must mean numerically lower");
+    }
+
+    /// One peer transmits under eight identifiers; all eight must resolve to
+    /// the same address, or the transport would see eight peers.
+    #[test]
+    fn every_class_resolves_to_one_peer() {
+        for prio in 0..=7u8 {
+            assert_eq!(tx_id(0x0A, 3, prio) & peer_mask(3), 0x0A);
+        }
+    }
+
+    /// The receiver must drop its own frames whatever class they carry. Getting
+    /// this wrong makes a peer talk to itself.
+    #[test]
+    fn own_frames_are_dropped_at_every_priority() {
+        let filter = RxFilter {
+            own: 0x0A,
+            match_: 0,
+            mask: 0,
+            prio_bits: 3,
+        };
+        let mut out = [0u8; FD_MAX_DLEN];
+        for prio in 0..=7u8 {
+            let (frame, wire) = encode(tx_id(0x0A, 3, prio), &[1, 2, 3], true).unwrap();
+            assert_eq!(
+                decode(&frame, wire, &filter, &mut out),
+                Err(RxDrop::OwnFrame),
+                "priority {prio}"
+            );
+        }
+    }
+
+    /// And a different peer is delivered, at every class, under its peer id.
+    #[test]
+    fn other_peers_are_delivered_under_their_peer_id() {
+        let filter = RxFilter {
+            own: 0x0A,
+            match_: 0,
+            mask: 0,
+            prio_bits: 3,
+        };
+        let mut out = [0u8; FD_MAX_DLEN];
+        for prio in 0..=7u8 {
+            let (frame, wire) = encode(tx_id(0x0B, 3, prio), &[1, 2, 3], true).unwrap();
+            let (n, sender) = decode(&frame, wire, &filter, &mut out).unwrap();
+            assert_eq!((n, sender), (3, 0x0B), "priority {prio}");
+        }
+    }
+
+    /// Fewer class bits fold neighbouring priorities together but must not
+    /// reorder them.
+    #[test]
+    fn fewer_bits_fold_without_reordering() {
+        // Two bits: four classes, pairs of priorities merged.
+        assert_eq!(tx_id(0x10, 2, CONTROL), tx_id(0x10, 2, REAL_TIME));
+        assert_eq!(tx_id(0x10, 2, DATA), tx_id(0x10, 2, 4));
+        let ids: Vec<u32> = (0..=7u8).map(|p| tx_id(0x10, 2, p)).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted);
+        // One bit: urgent half versus bulk half.
+        assert_eq!(tx_id(0x10, 1, CONTROL), 0x010);
+        assert_eq!(tx_id(0x10, 1, DATA), 0x410);
+    }
+
+    /// Class bits come out of the peer space, and the budget must be stated.
+    #[test]
+    fn class_bits_cost_peer_space() {
+        assert_eq!(max_peer_id(0), 0x7FF); // 2048 peers, no classes
+        assert_eq!(max_peer_id(1), 0x3FF);
+        assert_eq!(max_peer_id(2), 0x1FF);
+        assert_eq!(max_peer_id(3), 0x0FF); // 256 peers, 8 classes
+    }
+
+    /// A band still selects peers, not classes, so a filtered bus keeps working
+    /// when priority bits are switched on.
+    #[test]
+    fn bands_filter_on_the_peer_field() {
+        let filter = RxFilter {
+            own: 0x0A,
+            match_: 0x00,
+            mask: 0xF0,
+            prio_bits: 3,
+        };
+        let mut out = [0u8; FD_MAX_DLEN];
+        // Peer 0x0B is inside the band 0x00/0xF0, at the noisiest class.
+        let (inside, wire) = encode(tx_id(0x0B, 3, BACKGROUND), &[1], true).unwrap();
+        assert!(decode(&inside, wire, &filter, &mut out).is_ok());
+        // Peer 0x1B is outside it, even at the most urgent class.
+        let (outside, wire) = encode(tx_id(0x1B, 3, CONTROL), &[1], true).unwrap();
+        assert_eq!(
+            decode(&outside, wire, &filter, &mut out),
+            Err(RxDrop::Filtered { sender: 0x1B })
+        );
     }
 }
