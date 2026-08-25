@@ -69,7 +69,8 @@ const IFNAMSIZ: usize = 16;
 ///
 /// * `device` — the CAN interface name, e.g. `can0` or `vcan0`
 /// * `bitrate` — arbitration-phase bit rate; also the sole rate for classic CAN
-/// * `dbitrate` — CAN FD data-phase bit rate. `0` selects classic CAN
+/// * `dbitrate` — CAN FD data-phase bit rate. Must be non-zero: this link is
+///   CAN FD only
 /// * `id` — **this** peer's identifier. It transmits on this, and every other
 ///   peer sees it as this peer's address
 /// * `match` — accept frames whose `(id & mask) == match`
@@ -77,7 +78,8 @@ const IFNAMSIZ: usize = 16;
 ///
 /// On Linux the bit rates are advisory: rates are set out of band with
 /// `ip link set can0 type can bitrate ...` and a virtual interface has none at
-/// all. `dbitrate` is still load-bearing, because `0` selects classic framing.
+/// all. They are still validated, because `dbitrate=0` used to mean classic
+/// CAN and now means a misconfiguration.
 ///
 /// # Identifier value is bus priority
 ///
@@ -242,6 +244,20 @@ impl CanEndpoint {
     }
 
     fn validate(&self) -> ZResult<()> {
+        // This link is CAN FD only. `dbitrate=0` used to select classic CAN,
+        // whose 7-byte MTU is smaller than zenoh's per-fragment overhead, so a
+        // classic link could never carry a session. Refusing beats shipping a
+        // mode whose only symptom is a hang.
+        if self.dbitrate == 0 {
+            bail!(
+                "CAN `{}` is 0, which selected classic CAN. This link is CAN FD only: a \
+                 7-byte MTU is smaller than zenoh's per-fragment overhead, so no session \
+                 could make progress. Set a data-phase bit rate, e.g. `{}=2000000`",
+                config::DBITRATE,
+                config::DBITRATE
+            );
+        }
+
         if self.prio_bits > frame::PRIO_BITS_MAX {
             bail!(
                 "CAN `{}` is {}, but zenoh has 8 priorities so at most {} bits are useful",
@@ -292,11 +308,6 @@ impl CanEndpoint {
         }
 
         Ok(())
-    }
-
-    /// Whether the endpoint asks for CAN FD. `dbitrate=0` selects classic CAN.
-    pub(crate) fn wants_fd(&self) -> bool {
-        self.dbitrate != 0
     }
 
     /// The locator naming a peer on this bus, which is how the multicast
@@ -352,7 +363,6 @@ mod tests {
         assert_eq!(c.id, DEFAULT_ID);
         assert_eq!(c.filter_match, DEFAULT_MATCH);
         assert_eq!(c.filter_mask, DEFAULT_MASK);
-        assert!(c.wants_fd());
     }
 
     #[test]
@@ -416,10 +426,12 @@ mod tests {
         assert!(CanEndpoint::parse(&ep("can/vcan0#so_rcvbuf=lots")).is_err());
     }
 
+    /// Classic CAN is refused, and the message says why rather than leaving
+    /// someone to discover a 7-byte MTU at runtime.
     #[test]
-    fn a_zero_dbitrate_selects_classic_can() {
-        let c = CanEndpoint::parse(&ep("can/vcan0#dbitrate=0")).unwrap();
-        assert!(!c.wants_fd());
+    fn a_zero_dbitrate_is_refused() {
+        let e = CanEndpoint::parse(&ep("can/vcan0#dbitrate=0")).unwrap_err();
+        assert!(e.to_string().contains("CAN FD only"), "{e}");
     }
 
     #[test]

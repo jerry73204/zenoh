@@ -115,9 +115,6 @@ pub(crate) struct CanSocket {
     /// the identifier.
     prio_bits: u8,
     filter: RxFilter,
-    /// The mode the interface actually came up in, which is not necessarily the
-    /// mode the endpoint asked for.
-    fd_mode: bool,
     mtu: BatchSize,
 }
 
@@ -182,31 +179,31 @@ impl CanSocket {
             bail!("CAN: setting the receive filter on {:?} failed: {e}", ep.device);
         }
 
-        // Ask for CAN FD. If the interface does not support it, fall back to
-        // classic framing rather than failing, and report the mode obtained so
-        // the MTU is sized from reality — declaring 63 on a classic interface
-        // would truncate every frame.
-        let mut fd_mode = false;
-        if ep.wants_fd() {
-            let enable: libc::c_int = 1;
-            // SAFETY: `enable` outlives the call and its length is its own size.
-            let rc = unsafe {
-                libc::setsockopt(
-                    raw.fd,
-                    libc::SOL_CAN_RAW,
-                    libc::CAN_RAW_FD_FRAMES,
-                    &enable as *const libc::c_int as *const libc::c_void,
-                    mem::size_of::<libc::c_int>() as libc::socklen_t,
-                )
-            };
-            fd_mode = rc == 0;
-            if !fd_mode {
-                let e = io::Error::last_os_error();
-                tracing::debug!(
-                    "CAN: interface {:?} has no CAN FD ({e}), using classic frames",
-                    ep.device
-                );
-            }
+        // CAN FD is required, not preferred. Classic CAN leaves a 7-byte MTU
+        // against zenoh's ~16 bytes of per-fragment overhead, so a classic link
+        // cannot make progress at all. Failing here beats coming up in a mode
+        // whose only symptom is a session that appears to hang.
+        let enable: libc::c_int = 1;
+        // SAFETY: `enable` outlives the call and its length is its own size.
+        let rc = unsafe {
+            libc::setsockopt(
+                raw.fd,
+                libc::SOL_CAN_RAW,
+                libc::CAN_RAW_FD_FRAMES,
+                &enable as *const libc::c_int as *const libc::c_void,
+                mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            let e = io::Error::last_os_error();
+            bail!(
+                "CAN: interface {:?} does not support CAN FD ({e}). This link is CAN FD only: \
+                 classic CAN leaves a 7-byte MTU, which is smaller than zenoh's per-fragment \
+                 overhead, so no session could make progress. Enable FD on the interface, e.g. \
+                 `ip link set {} type can bitrate 500000 dbitrate 2000000 fd on`",
+                ep.device,
+                ep.device
+            );
         }
 
         // Frames that arrive faster than the link drains them are dropped by the
@@ -237,20 +234,7 @@ impl CanSocket {
             bail!("CAN: binding to {:?} failed: {e}", ep.device);
         }
 
-        let mtu = frame::mtu(fd_mode);
-        if !fd_mode {
-            // Not a warning about performance. zenoh's per-fragment overhead is
-            // around 16 bytes, which is larger than a classic-CAN MTU, so the
-            // transport cannot make progress at all — and the symptom is a
-            // session that merely appears to hang. RFC-0081 §4.5.
-            tracing::warn!(
-                "CAN: {:?} came up in classic mode, so the link MTU is {mtu} bytes. \
-                 zenoh's per-fragment overhead exceeds that, and a session over this link \
-                 is unlikely to make progress. Enable CAN FD on the interface, or set \
-                 `dbitrate` deliberately if classic framing is intended.",
-                ep.device
-            );
-        }
+        let mtu = frame::FD_MTU;
 
         let io = AsyncFd::new(raw)
             .map_err(|e| zerror!("CAN: registering {:?} with the runtime failed: {e}", ep.device))?;
@@ -265,7 +249,6 @@ impl CanSocket {
                 mask: ep.filter_mask,
                 prio_bits: ep.prio_bits,
             },
-            fd_mode,
             mtu,
         })
     }
@@ -280,8 +263,7 @@ impl CanSocket {
     /// to loop over: a datagram link writes one frame or it does not.
     pub(crate) async fn send(&self, datagram: &[u8], priority: u8) -> ZResult<usize> {
         let id = frame::tx_id(self.peer, self.prio_bits, priority);
-        let (f, wire) = frame::encode(id, datagram, self.fd_mode)
-            .map_err(|e| zerror!("CAN: {e}"))?;
+        let (f, wire) = frame::encode(id, datagram).map_err(|e| zerror!("CAN: {e}"))?;
         let bytes = f.as_wire_bytes(wire);
 
         loop {
