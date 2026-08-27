@@ -342,6 +342,7 @@ pub enum InterceptorLink {
     UnixsockStream,
     Vsock,
     Ws,
+    Can,
 }
 
 impl std::fmt::Display for InterceptorLink {
