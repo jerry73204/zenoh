@@ -19,6 +19,12 @@ use zenoh_result::{bail, ZResult};
 
 use crate::IsotpEndpoint;
 
+// NOTE: this is the branch built against the zenoh revision rmw_zenoh pins
+// (2687c5135, ~1.8.0). Its `LinkUnicastTrait` predates the priority-carrying
+// I/O methods, `supports_priorities`, `get_fd` and
+// `get_locators_noloopback` that `main` has, so this file differs from the
+// `main` branch's copy in exactly those four places and nowhere else.
+
 /// An ISO-TP channel is a directed identifier pair, so peers do not discover
 /// one another: each side is configured with the other's identifier, and this
 /// side's `tx_id` is the other side's `rx_id`.
@@ -119,11 +125,6 @@ impl LinkManagerUnicastTrait for LinkManagerUnicastIsotp {
             Vec::new()
         }
     }
-
-    /// A CAN interface is never loopback, so this is the full set.
-    async fn get_locators_noloopback(&self) -> Vec<Locator> {
-        self.get_locators().await
-    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -142,7 +143,7 @@ mod imp {
     use tokio_util::sync::CancellationToken;
     use zenoh_link_commons::{LinkAuthId, LinkUnicast, LinkUnicastTrait};
     use zenoh_protocol::{
-        core::{EndPoint, Locator, Priority},
+        core::{EndPoint, Locator},
         transport::BatchSize,
     };
     use zenoh_result::{bail, ZResult};
@@ -231,13 +232,13 @@ mod imp {
             &LinkAuthId::Isotp
         }
 
-        async fn write(&self, buffer: &[u8], _priority: Option<Priority>) -> ZResult<usize> {
+        async fn write(&self, buffer: &[u8]) -> ZResult<usize> {
             self.socket.send(buffer).await
         }
 
         /// One PDU per call; the kernel segments it. zenoh never hands the link
         /// more than its MTU, because the batch is clamped to it.
-        async fn write_all(&self, buffer: &[u8], _priority: Option<Priority>) -> ZResult<()> {
+        async fn write_all(&self, buffer: &[u8]) -> ZResult<()> {
             let n = self.socket.send(buffer).await?;
             if n != buffer.len() {
                 bail!("ISO-TP: short write of {n} bytes, expected {}", buffer.len());
@@ -245,14 +246,14 @@ mod imp {
             Ok(())
         }
 
-        async fn read(&self, buffer: &mut [u8], _priority: Option<Priority>) -> ZResult<usize> {
+        async fn read(&self, buffer: &mut [u8]) -> ZResult<usize> {
             self.socket.recv(buffer).await
         }
 
         /// "Exact" and "best effort" collapse on a message-preserving link: one
         /// call returns one whole PDU or it fails.
-        async fn read_exact(&self, buffer: &mut [u8], priority: Option<Priority>) -> ZResult<()> {
-            let n = self.read(buffer, priority).await?;
+        async fn read_exact(&self, buffer: &mut [u8]) -> ZResult<()> {
+            let n = self.read(buffer).await?;
             if n != buffer.len() {
                 bail!("ISO-TP: read {n} bytes, expected {}", buffer.len());
             }
@@ -264,11 +265,6 @@ mod imp {
             // teardown handshake of its own.
             tracing::trace!("Closing ISO-TP link: {self}");
             Ok(())
-        }
-
-        #[cfg(all(feature = "uring", target_os = "linux"))]
-        fn get_fd(&self) -> ZResult<std::os::fd::RawFd> {
-            bail!("ISO-TP: io_uring is not supported on this link")
         }
     }
 

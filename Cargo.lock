@@ -6198,7 +6198,7 @@ dependencies = [
 
 [[package]]
 name = "zenoh-link-isotp"
-version = "1.10.0"
+version = "1.8.0"
 dependencies = [
  "async-trait",
  "libc",
