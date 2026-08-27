@@ -208,4 +208,86 @@ mod tests {
 
         ztimeout!(server.del_listener(&listen)).unwrap();
     }
+
+    /// phase-393 W7: one identifier pair per zenoh priority.
+    ///
+    /// A CAN identifier *is* the bus priority, so mapping QoS onto the
+    /// identifier is what turns zenoh's priorities into real arbitration. The
+    /// link only claims `supports_priorities` when each priority owns a socket,
+    /// because zenoh then runs one receive task per priority and two of them on
+    /// one socket would race for the same PDUs.
+    ///
+    /// What this cannot show is preemption: `vcan` has no arbitration at all.
+    /// That needs a real bus.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs a vcan0 interface; see the module docs"]
+    async fn transport_unicast_isotp_priority_classes() {
+        zenoh_util::init_log_from_env_or("error");
+        if !vcan_present() {
+            return;
+        }
+
+        // Eight classes: identifiers 0x200..=0x207 one way, 0x300..=0x307 back.
+        let listen: EndPoint = format!("isotp/{DEVICE}#tx_id=0x300;rx_id=0x200;prio_classes=8")
+            .parse()
+            .unwrap();
+        let connect: EndPoint = format!("isotp/{DEVICE}#tx_id=0x200;rx_id=0x300;prio_classes=8")
+            .parse()
+            .unwrap();
+
+        let server = TransportManager::builder()
+            .zid(ZenohIdProto::try_from([1]).unwrap())
+            .whatami(WhatAmI::Peer)
+            .build_test(Arc::new(SHPeer::default()))
+            .unwrap();
+        let client = TransportManager::builder()
+            .zid(ZenohIdProto::try_from([2]).unwrap())
+            .whatami(WhatAmI::Peer)
+            .build_test(Arc::new(SHPeer::default()))
+            .unwrap();
+
+        ztimeout!(server.add_listener(listen.clone())).unwrap();
+        let transport = ztimeout!(client.open_transport_unicast(connect.clone())).unwrap();
+        println!("\teight-class transport is up");
+
+        ztimeout!(transport.close()).unwrap();
+        tokio::time::sleep(SLEEP).await;
+        ztimeout!(server.del_listener(&listen)).unwrap();
+    }
+
+    /// The default must stay exactly what it was: one pair, and a link that does
+    /// not claim priority support.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs a vcan0 interface; see the module docs"]
+    async fn transport_unicast_isotp_single_class_is_unchanged() {
+        zenoh_util::init_log_from_env_or("error");
+        if !vcan_present() {
+            return;
+        }
+
+        let listen: EndPoint = format!("isotp/{DEVICE}#tx_id=0x401;rx_id=0x400")
+            .parse()
+            .unwrap();
+        let connect: EndPoint = format!("isotp/{DEVICE}#tx_id=0x400;rx_id=0x401")
+            .parse()
+            .unwrap();
+
+        let server = TransportManager::builder()
+            .zid(ZenohIdProto::try_from([3]).unwrap())
+            .whatami(WhatAmI::Peer)
+            .build_test(Arc::new(SHPeer::default()))
+            .unwrap();
+        let client = TransportManager::builder()
+            .zid(ZenohIdProto::try_from([4]).unwrap())
+            .whatami(WhatAmI::Peer)
+            .build_test(Arc::new(SHPeer::default()))
+            .unwrap();
+
+        ztimeout!(server.add_listener(listen.clone())).unwrap();
+        let transport = ztimeout!(client.open_transport_unicast(connect.clone())).unwrap();
+        assert_eq!(transport.get_links().unwrap().len(), 1);
+        ztimeout!(transport.close()).unwrap();
+        tokio::time::sleep(SLEEP).await;
+        ztimeout!(server.del_listener(&listen)).unwrap();
+    }
 }

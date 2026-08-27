@@ -169,7 +169,10 @@ mod imp {
     }
 
     pub(super) struct LinkUnicastIsotp {
-        socket: IsotpSocket,
+        /// One socket per traffic class. With the default single class this is
+        /// one element and the link behaves exactly as it did before.
+        sockets: Vec<IsotpSocket>,
+        ep: IsotpEndpoint,
         src: Locator,
         dst: Locator,
         device: String,
@@ -186,25 +189,24 @@ mod imp {
 
     impl LinkUnicastIsotp {
         fn new(ep: &IsotpEndpoint) -> ZResult<LinkUnicastIsotp> {
-            // Priority classes need one socket each and a read that selects
-            // across them. That is phase-393 W7; refusing here beats opening a
-            // link that silently uses one class and looks like it worked.
-            if ep.prio_classes > 1 {
-                bail!(
-                    "ISO-TP: `prio_classes` above 1 is not implemented yet (phase-393 W7); \
-                     the link would otherwise use a single class silently"
-                );
+            // One socket per class. Opening them all up front means a partly
+            // usable link is never handed to the transport: either every class
+            // has its identifier pair or the link fails to open.
+            let mut sockets = Vec::with_capacity(ep.prio_classes as usize);
+            for class in 0..ep.prio_classes {
+                sockets.push(IsotpSocket::open(ep, class)?);
             }
-            let socket = IsotpSocket::open(ep, 0)?;
             tracing::debug!(
-                "ISO-TP link on {:?}: tx {:#x}, rx {:#x}, MTU {}",
+                "ISO-TP link on {:?}: tx {:#x}, rx {:#x}, {} class(es), MTU {}",
                 ep.device,
                 ep.tx_id,
                 ep.rx_id,
+                ep.prio_classes,
                 ISOTP_MAX_MTU
             );
             Ok(LinkUnicastIsotp {
-                socket,
+                sockets,
+                ep: ep.clone(),
                 connected: Arc::new(AtomicBool::new(true)),
                 // The pair is directional, so the two ends of the link are the
                 // two identifiers rather than two addresses.
@@ -212,6 +214,14 @@ mod imp {
                 dst: ep.peer_locator(),
                 device: ep.device.clone(),
             })
+        }
+
+        /// A CAN identifier is the bus priority, so this is where zenoh's QoS
+        /// becomes arbitration: the batch's priority picks the socket, and the
+        /// socket's identifier decides who wins the wire.
+        fn socket_for(&self, priority: Option<Priority>) -> &IsotpSocket {
+            let p = priority.unwrap_or(Priority::DEFAULT) as u8;
+            &self.sockets[self.ep.class_of(p) as usize]
         }
     }
 
@@ -248,22 +258,32 @@ mod imp {
             &LinkAuthId::Isotp
         }
 
-        async fn write(&self, buffer: &[u8], _priority: Option<Priority>) -> ZResult<usize> {
-            self.socket.send(buffer).await
+        /// True only when each priority has its own identifier pair. Reporting
+        /// it otherwise would make zenoh fan out receive tasks onto a single
+        /// socket, where they would race for the same PDUs.
+        fn supports_priorities(&self) -> bool {
+            self.ep.has_priority_classes()
+        }
+
+        async fn write(&self, buffer: &[u8], priority: Option<Priority>) -> ZResult<usize> {
+            self.socket_for(priority).send(buffer).await
         }
 
         /// One PDU per call; the kernel segments it. zenoh never hands the link
         /// more than its MTU, because the batch is clamped to it.
-        async fn write_all(&self, buffer: &[u8], _priority: Option<Priority>) -> ZResult<()> {
-            let n = self.socket.send(buffer).await?;
+        async fn write_all(&self, buffer: &[u8], priority: Option<Priority>) -> ZResult<()> {
+            let n = self.socket_for(priority).send(buffer).await?;
             if n != buffer.len() {
                 bail!("ISO-TP: short write of {n} bytes, expected {}", buffer.len());
             }
             Ok(())
         }
 
-        async fn read(&self, buffer: &mut [u8], _priority: Option<Priority>) -> ZResult<usize> {
-            self.socket.recv(buffer).await
+        /// zenoh runs one receive task per priority when the link reports
+        /// priority support, so each call already belongs to a single class and
+        /// there is nothing to select across here.
+        async fn read(&self, buffer: &mut [u8], priority: Option<Priority>) -> ZResult<usize> {
+            self.socket_for(priority).recv(buffer).await
         }
 
         /// "Exact" and "best effort" collapse on a message-preserving link: one

@@ -86,7 +86,7 @@ const CAN_EFF_MASK: u32 = 0x1FFF_FFFF;
 /// * `tx_id` — the identifier this peer transmits its PDUs on
 /// * `rx_id` — the identifier it receives on, and on which it sends flow control
 /// * `eff` — use 29-bit extended identifiers instead of 11-bit. Default `false`
-/// * `prio_classes` — 1, 2, 4 or 8. See below
+/// * `prio_classes` — 1 or 8. See below
 ///
 /// The two identifiers are a **directed pair**: this peer's `tx_id` must be the
 /// other peer's `rx_id` and vice versa. Only ISO-TP **normal** addressing is
@@ -96,12 +96,16 @@ const CAN_EFF_MASK: u32 = 0x1FFF_FFFF;
 ///
 /// # Priority classes
 ///
-/// With `prio_classes > 1` the link opens that many ISO-TP sockets and selects
-/// one by the priority of the batch being written, so zenoh's QoS becomes real
-/// CAN arbitration. Class *k* uses `tx_id + k` and `rx_id + k`, so a contiguous
-/// block of that many identifiers is reserved from each base, and the lowest
-/// class — the most urgent — holds the lowest identifier and therefore wins the
-/// bus.
+/// With `prio_classes = 8` the link opens eight ISO-TP sockets and selects one
+/// by the priority of the batch being written, so zenoh's QoS becomes real CAN
+/// arbitration. Class *k* uses `tx_id + k` and `rx_id + k`, so a contiguous
+/// block of eight identifiers is reserved from each base, and the lowest class —
+/// the most urgent — holds the lowest identifier and therefore wins the bus.
+///
+/// Only 1 and 8 are accepted. zenoh runs one receive task per priority when a
+/// link reports priority support, so a class must own exactly one socket;
+/// mapping several priorities onto one would have those tasks racing for the
+/// same PDUs.
 ///
 /// That ordering holds **within** a link. Across links it depends on how the
 /// blocks were allocated, which is an operator decision rather than something
@@ -247,10 +251,15 @@ impl IsotpEndpoint {
             );
         }
 
-        if !matches!(requested_classes, 1 | 2 | 4 | 8) {
+        // 1 or 8, not any divisor of 8. When a link reports that it supports
+        // priorities, zenoh spawns exactly one receive task PER PRIORITY, each
+        // reading the socket for its own class. Fewer classes than priorities
+        // would put several of those tasks on one socket, racing for the same
+        // PDUs. One class per priority, or one socket for everything.
+        if !matches!(requested_classes, 1 | 8) {
             bail!(
-                "ISO-TP `{}` is {requested_classes}, but zenoh has 8 priorities so only \
-                 1, 2, 4 or 8 divide them evenly",
+                "ISO-TP `{}` is {requested_classes}, but only 1 or 8 are valid: zenoh runs one \
+                 receive task per priority, so a class must map to exactly one socket",
                 config::PRIO_CLASSES
             );
         }
@@ -314,11 +323,21 @@ impl IsotpEndpoint {
     }
 
     /// Map one of zenoh's eight priorities onto this link's classes.
+    ///
+    /// With one class everything shares a socket; with eight the mapping is the
+    /// identity, so each priority has its own identifier pair and its own place
+    /// in bus arbitration.
     pub(crate) fn class_of(&self, priority: u8) -> u8 {
-        match self.prio_classes {
-            1 => 0,
-            n => priority / (8 / n),
+        if self.prio_classes == 1 {
+            0
+        } else {
+            priority.min(self.prio_classes - 1)
         }
+    }
+
+    /// Whether this link maps zenoh priorities onto distinct identifiers.
+    pub(crate) fn has_priority_classes(&self) -> bool {
+        self.prio_classes > 1
     }
 
     /// The far end of the pair, as this peer sees it: the identifiers swapped.
@@ -401,13 +420,15 @@ mod tests {
         assert!(e.to_string().contains("29-bit"), "{e}");
     }
 
+    /// One socket for everything, or one per priority. Anything between would
+    /// put several of zenoh's per-priority receive tasks on one socket.
     #[test]
-    fn only_powers_of_two_divide_eight_priorities() {
-        for n in [1u32, 2, 4, 8] {
+    fn only_one_or_eight_classes_are_valid() {
+        for n in [1u32, 8] {
             let s = format!("isotp/vcan0#tx_id=0x100;rx_id=0x200;prio_classes={n}");
             assert!(IsotpEndpoint::parse(&ep(&s)).is_ok(), "{n} should be valid");
         }
-        for n in [0u32, 3, 5, 16] {
+        for n in [0u32, 2, 3, 4, 5, 16] {
             let s = format!("isotp/vcan0#tx_id=0x100;rx_id=0x200;prio_classes={n}");
             assert!(IsotpEndpoint::parse(&ep(&s)).is_err(), "{n} should be refused");
         }
@@ -459,10 +480,6 @@ mod tests {
         for p in 0..8u8 {
             assert_eq!(eight.class_of(p), p);
         }
-        let two =
-            IsotpEndpoint::parse(&ep("isotp/vcan0#tx_id=0x100;rx_id=0x200;prio_classes=2")).unwrap();
-        let classes: Vec<u8> = (0..8u8).map(|p| two.class_of(p)).collect();
-        assert_eq!(classes, vec![0, 0, 0, 0, 1, 1, 1, 1]);
     }
 
     #[test]
