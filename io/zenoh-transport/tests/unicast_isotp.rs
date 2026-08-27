@@ -161,4 +161,51 @@ mod tests {
         tokio::time::sleep(SLEEP).await;
         ztimeout!(server.del_listener(&listen)).unwrap();
     }
+
+    /// A listener must survive its first client.
+    ///
+    /// This is the regression test for a one-shot listener: the first connect
+    /// succeeded and every later one failed, because the listener created a
+    /// single link, handed it to the manager and never re-armed. It surfaced as
+    /// ROS parameter calls "flaking" -- in fact the first `ros2` command after
+    /// starting a node worked and all the rest did not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs a vcan0 interface; see the module docs"]
+    async fn transport_unicast_isotp_listener_accepts_more_than_one_client() {
+        zenoh_util::init_log_from_env_or("error");
+        if !vcan_present() {
+            return;
+        }
+
+        let listen: EndPoint = format!("isotp/{DEVICE}#tx_id=0x7EA;rx_id=0x7E2")
+            .parse()
+            .unwrap();
+        let connect: EndPoint = format!("isotp/{DEVICE}#tx_id=0x7E2;rx_id=0x7EA")
+            .parse()
+            .unwrap();
+
+        let server = TransportManager::builder()
+            .zid(ZenohIdProto::try_from([1]).unwrap())
+            .whatami(WhatAmI::Peer)
+            .build_test(Arc::new(SHPeer::default()))
+            .unwrap();
+        ztimeout!(server.add_listener(listen.clone())).unwrap();
+
+        for round in 1..=3 {
+            let client = TransportManager::builder()
+                .zid(ZenohIdProto::try_from([(round + 1) as u8]).unwrap())
+                .whatami(WhatAmI::Peer)
+                .build_test(Arc::new(SHPeer::default()))
+                .unwrap();
+
+            let transport = ztimeout!(client.open_transport_unicast(connect.clone()))
+                .unwrap_or_else(|e| panic!("round {round} failed to connect: {e}"));
+            println!("\tround {round}: connected");
+            ztimeout!(transport.close()).unwrap();
+            ztimeout!(client.close());
+            tokio::time::sleep(SLEEP).await;
+        }
+
+        ztimeout!(server.del_listener(&listen)).unwrap();
+    }
 }

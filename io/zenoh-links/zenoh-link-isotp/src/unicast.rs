@@ -136,7 +136,14 @@ fn unsupported<T>(ep: &IsotpEndpoint) -> ZResult<T> {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use std::{fmt, sync::Arc};
+    use std::{
+        fmt,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
 
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
@@ -166,6 +173,15 @@ mod imp {
         src: Locator,
         dst: Locator,
         device: String,
+        /// Cleared when the link is dropped, which is how the listener learns
+        /// that its identifier pair is free again and it may re-arm.
+        connected: Arc<AtomicBool>,
+    }
+
+    impl Drop for LinkUnicastIsotp {
+        fn drop(&mut self) {
+            self.connected.store(false, Ordering::Release);
+        }
     }
 
     impl LinkUnicastIsotp {
@@ -189,6 +205,7 @@ mod imp {
             );
             Ok(LinkUnicastIsotp {
                 socket,
+                connected: Arc::new(AtomicBool::new(true)),
                 // The pair is directional, so the two ends of the link are the
                 // two identifiers rather than two addresses.
                 src: ep.locator(),
@@ -309,16 +326,15 @@ mod imp {
             bail!("ISO-TP: already listening on {endpoint}");
         }
 
-        let link = LinkUnicastIsotp::new(&ep)?;
-        let locator = link.src.clone();
+        // Bind once up front so a bad endpoint fails the caller rather than a
+        // background task nobody is watching.
+        let first = LinkUnicastIsotp::new(&ep)?;
+        let locator = first.src.clone();
         let token = CancellationToken::new();
 
-        mgr.manager
-            .send_async(LinkUnicast::from(
-                Arc::new(link) as Arc<dyn LinkUnicastTrait>
-            ))
-            .await
-            .map_err(|e| zenoh_result::zerror!("ISO-TP: could not hand over the link: {e}"))?;
+        let manager = mgr.manager.clone();
+        let task_token = token.clone();
+        tokio::task::spawn(async move { accept_loop(ep, first, manager, task_token).await });
 
         mgr.listeners.write().await.insert(
             endpoint,
@@ -328,5 +344,69 @@ mod imp {
             },
         );
         Ok(locator)
+    }
+
+    /// Re-arm after every client.
+    ///
+    /// A listener that hands over one link and stops is not a listener: the
+    /// first peer works and every later one fails, which surfaces far away from
+    /// here as intermittent ROS behaviour. `zenoh-link-serial` loops for the
+    /// same reason.
+    ///
+    /// The identifier pair is a single kernel socket, so the next bind can only
+    /// happen once the previous link is dropped. `connected` is cleared in
+    /// `Drop`, which is exactly that moment.
+    async fn accept_loop(
+        ep: IsotpEndpoint,
+        first: LinkUnicastIsotp,
+        manager: zenoh_link_commons::NewLinkChannelSender,
+        token: CancellationToken,
+    ) {
+        let mut next = Some(first);
+        loop {
+            let link = match next.take() {
+                Some(l) => l,
+                None => match rebind(&ep, &token).await {
+                    Some(l) => l,
+                    None => return,
+                },
+            };
+            let connected = link.connected.clone();
+
+            if manager
+                .send_async(LinkUnicast::from(Arc::new(link) as Arc<dyn LinkUnicastTrait>))
+                .await
+                .is_err()
+            {
+                // The transport manager is gone; so is the reason to listen.
+                return;
+            }
+
+            // Wait for this client to finish before rebinding the pair.
+            while connected.load(Ordering::Acquire) {
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        }
+    }
+
+    /// The socket is released when the previous link drops, but the drop and
+    /// this rebind race by a few microseconds, so a first failure is expected
+    /// rather than fatal.
+    async fn rebind(ep: &IsotpEndpoint, token: &CancellationToken) -> Option<LinkUnicastIsotp> {
+        loop {
+            match LinkUnicastIsotp::new(ep) {
+                Ok(link) => return Some(link),
+                Err(e) => {
+                    tracing::debug!("ISO-TP: rebinding {:?} shortly: {e}", ep.device);
+                    tokio::select! {
+                        _ = token.cancelled() => return None,
+                        _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                    }
+                }
+            }
+        }
     }
 }
