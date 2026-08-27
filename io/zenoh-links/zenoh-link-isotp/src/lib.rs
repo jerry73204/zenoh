@@ -40,6 +40,8 @@
 //! and liveliness only to unicast faces, so a multicast CAN link cannot carry
 //! ROS services, actions, parameters or graph introspection, and this one can.
 
+#[cfg(target_os = "linux")]
+mod sys;
 mod unicast;
 
 use std::str::FromStr;
@@ -317,6 +319,19 @@ impl IsotpEndpoint {
             1 => 0,
             n => priority / (8 / n),
         }
+    }
+
+    /// The far end of the pair, as this peer sees it: the identifiers swapped.
+    pub(crate) fn peer_locator(&self) -> Locator {
+        Locator::from_str(&format!(
+            "{ISOTP_LOCATOR_PREFIX}/{}?{}={:#x};{}={:#x}",
+            self.device,
+            config::TX_ID,
+            self.rx_id,
+            config::RX_ID,
+            self.tx_id
+        ))
+        .expect("an ISO-TP locator is always well formed")
     }
 
     pub(crate) fn locator(&self) -> Locator {
