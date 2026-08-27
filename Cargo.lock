@@ -5125,6 +5125,7 @@ version = "1.10.0"
 dependencies = [
  "zenoh-config",
  "zenoh-link-commons",
+ "zenoh-link-isotp",
  "zenoh-link-quic",
  "zenoh-link-quic_datagram",
  "zenoh-link-serial",
@@ -5172,6 +5173,22 @@ dependencies = [
  "zenoh-result",
  "zenoh-runtime",
  "zenoh-util",
+]
+
+[[package]]
+name = "zenoh-link-isotp"
+version = "1.10.0"
+dependencies = [
+ "async-trait",
+ "libc",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zenoh-core",
+ "zenoh-link-commons",
+ "zenoh-protocol",
+ "zenoh-result",
+ "zenoh-sync",
 ]
 
 [[package]]

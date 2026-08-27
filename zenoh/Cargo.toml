@@ -65,6 +65,7 @@ tracing-instrument = [
   "zenoh-task/tracing-instrument",
 ]
 transport_compression = ["zenoh-transport/transport_compression"]
+transport_isotp = ["zenoh-transport/transport_isotp"]
 transport_multilink = ["zenoh-transport/transport_multilink"]
 transport_quic = ["zenoh-transport/transport_quic"]
 transport_quic_datagram = ["zenoh-transport/transport_quic_datagram"]
